@@ -196,44 +196,65 @@ func getBlockedActionsCommand(args []string) {
 		os.Exit(1)
 	}
 
-	// Filter to only blocked actions
+	// Separate allowed and blocked actions
+	var allowedActions []string
 	var blockedActions []string
 	for _, action := range actions {
 		matched, _ := matchesAnyPattern(action, patterns)
-		if !matched {
+		if matched {
+			allowedActions = append(allowedActions, action)
+		} else {
 			blockedActions = append(blockedActions, action)
 		}
-	}
-
-	if len(blockedActions) == 0 {
-		fmt.Println("✓ All actions are allowed by the permission boundary")
-		return
 	}
 
 	// Output results
 	switch *outputFormat {
 	case "json":
-		output, _ := json.MarshalIndent(blockedActions, "", "  ")
+		result := map[string]interface{}{
+			"allowed": allowedActions,
+			"blocked": blockedActions,
+			"summary": map[string]int{
+				"allowed": len(allowedActions),
+				"blocked": len(blockedActions),
+			},
+		}
+		output, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Println(string(output))
 
 	case "table":
-		fmt.Printf("BLOCKED ACTION\n")
-		fmt.Printf("%s\n", strings.Repeat("-", 60))
-		for _, action := range blockedActions {
-			fmt.Printf("%s\n", action)
+		fmt.Printf("%-60s %s\n", "ACTION", "STATUS")
+		fmt.Printf("%s\n", strings.Repeat("-", 75))
+		for _, action := range allowedActions {
+			fmt.Printf("%-60s %s\n", action, "✓ ALLOWED")
 		}
-		fmt.Printf("\nTotal: %d blocked action(s)\n", len(blockedActions))
+		for _, action := range blockedActions {
+			fmt.Printf("%-60s %s\n", action, "✗ BLOCKED")
+		}
+		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
 
 	default: // list
-		fmt.Println("✗ Blocked actions (not allowed by permission boundary):")
-		for _, action := range blockedActions {
-			fmt.Printf("  %s\n", action)
+		if len(allowedActions) > 0 {
+			fmt.Println("✓ Allowed actions:")
+			for _, action := range allowedActions {
+				fmt.Printf("  %s\n", action)
+			}
 		}
-		fmt.Printf("\nTotal: %d blocked action(s)\n", len(blockedActions))
+
+		if len(blockedActions) > 0 {
+			fmt.Println("\n✗ Blocked actions (not allowed by permission boundary):")
+			for _, action := range blockedActions {
+				fmt.Printf("  %s\n", action)
+			}
+		}
+
+		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
 	}
 
 	// Exit with error code if there are blocked actions
-	os.Exit(1)
+	if len(blockedActions) > 0 {
+		os.Exit(1)
+	}
 }
 
 func printUsage() {
