@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -97,6 +98,7 @@ func extractActions(policy PolicyDocument) []string {
 	for action := range actionsMap {
 		actionsList = append(actionsList, action)
 	}
+	sort.Strings(actionsList)
 
 	return actionsList
 }
@@ -207,6 +209,10 @@ func getBlockedActionsCommand(args []string) {
 			blockedActions = append(blockedActions, action)
 		}
 	}
+
+	// Sort both lists alphabetically
+	sort.Strings(allowedActions)
+	sort.Strings(blockedActions)
 
 	// Output results
 	switch *outputFormat {
