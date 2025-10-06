@@ -135,13 +135,13 @@ func pbCheckCommand(args []string) {
 	matched, matchingPatterns := matchesAnyPattern(action, patterns)
 
 	if matched {
-		fmt.Printf("✓ '%s' matches the following pattern(s):\n", action)
+		fmt.Printf("✅ '%s' matches the following pattern(s):\n", action)
 		for _, pattern := range matchingPatterns {
 			fmt.Printf("  - %s\n", pattern)
 		}
 		os.Exit(0)
 	} else {
-		fmt.Printf("✗ '%s' does not match any pattern\n", action)
+		fmt.Printf("❌ '%s' does not match any pattern\n", action)
 		os.Exit(1)
 	}
 }
@@ -232,23 +232,23 @@ func getBlockedActionsCommand(args []string) {
 		fmt.Printf("%-60s %s\n", "ACTION", "STATUS")
 		fmt.Printf("%s\n", strings.Repeat("-", 75))
 		for _, action := range allowedActions {
-			fmt.Printf("%-60s %s\n", action, "✓ ALLOWED")
+			fmt.Printf("%-60s %s\n", action, "✅ ALLOWED")
 		}
 		for _, action := range blockedActions {
-			fmt.Printf("%-60s %s\n", action, "✗ BLOCKED")
+			fmt.Printf("%-60s %s\n", action, "❌ BLOCKED")
 		}
 		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
 
 	default: // list
 		if len(allowedActions) > 0 {
-			fmt.Println("✓ Allowed actions:")
+			fmt.Println("✅ Allowed actions:")
 			for _, action := range allowedActions {
 				fmt.Printf("  %s\n", action)
 			}
 		}
 
 		if len(blockedActions) > 0 {
-			fmt.Println("\n✗ Blocked actions (not allowed by permission boundary):")
+			fmt.Println("\n❌ Blocked actions (not allowed by permission boundary):")
 			for _, action := range blockedActions {
 				fmt.Printf("  %s\n", action)
 			}
