@@ -10,6 +10,19 @@ import (
 	"strings"
 )
 
+// Policy document structures
+type PolicyDocument struct {
+	Version   string      `json:"Version"`
+	Statement []Statement `json:"Statement"`
+}
+
+type Statement struct {
+	Sid      string      `json:"Sid,omitempty"`
+	Effect   string      `json:"Effect"`
+	Action   interface{} `json:"Action,omitempty"`
+	Resource interface{} `json:"Resource,omitempty"`
+}
+
 func loadPatternsFromFile(filename string) ([]string, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -58,19 +71,57 @@ func matchesAnyPattern(action string, patterns []string) (bool, []string) {
 	return len(matches) > 0, matches
 }
 
-func main() {
-	configFile := flag.String("config", "pb.json", "Path to the patterns config file (JSON or text format)")
-	flag.Parse()
+func extractActions(policy PolicyDocument) []string {
+	actionsMap := make(map[string]bool)
 
-	if flag.NArg() != 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <action>\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\nOptions:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample: %s -config pb.json ec2:RunInstances\n", os.Args[0])
+	for _, statement := range policy.Statement {
+		if statement.Action == nil {
+			continue
+		}
+
+		// Action can be a string or array of strings
+		switch actions := statement.Action.(type) {
+		case string:
+			actionsMap[actions] = true
+		case []interface{}:
+			for _, action := range actions {
+				if actionStr, ok := action.(string); ok {
+					actionsMap[actionStr] = true
+				}
+			}
+		}
+	}
+
+	// Convert map to sorted slice
+	var actionsList []string
+	for action := range actionsMap {
+		actionsList = append(actionsList, action)
+	}
+
+	return actionsList
+}
+
+func pbCheckCommand(args []string) {
+	fs := flag.NewFlagSet("pb-check", flag.ExitOnError)
+	configFile := fs.String("config", "pb.json", "Path to the patterns config file (JSON or text format)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s pb-check [options] <action>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Check if an AWS action matches allowed patterns (permission boundary check)\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  %s pb-check -config pb.json ec2:RunInstances\n", os.Args[0])
+	}
+
+	fs.Parse(args)
+
+	if fs.NArg() != 1 {
+		fs.Usage()
 		os.Exit(1)
 	}
 
-	action := flag.Arg(0)
+	action := fs.Arg(0)
 
 	// Load patterns from config file
 	patterns, err := loadPatternsFromFile(*configFile)
@@ -89,6 +140,130 @@ func main() {
 		os.Exit(0)
 	} else {
 		fmt.Printf("✗ '%s' does not match any pattern\n", action)
+		os.Exit(1)
+	}
+}
+
+func getBlockedActionsCommand(args []string) {
+	fs := flag.NewFlagSet("get-blocked-actions", flag.ExitOnError)
+	configFile := fs.String("config", "pb.json", "Path to the permission boundary patterns config file")
+	outputFormat := fs.String("format", "list", "Output format: list, json, or table")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s get-blocked-actions [options] <policy-file>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Extract actions from an IAM policy that are blocked by permission boundary\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions policy.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -format json policy.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -config pb.json policy.json\n", os.Args[0])
+	}
+
+	fs.Parse(args)
+
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	policyFile := fs.Arg(0)
+
+	// Read and parse policy file
+	data, err := os.ReadFile(policyFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading policy file: %v\n", err)
+		os.Exit(1)
+	}
+
+	var policy PolicyDocument
+	if err := json.Unmarshal(data, &policy); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing policy JSON: %v\n", err)
+		os.Exit(1)
+	}
+
+	actions := extractActions(policy)
+
+	if len(actions) == 0 {
+		fmt.Println("No actions found in policy")
+		return
+	}
+
+	// Load patterns
+	patterns, err := loadPatternsFromFile(*configFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading patterns: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Filter to only blocked actions
+	var blockedActions []string
+	for _, action := range actions {
+		matched, _ := matchesAnyPattern(action, patterns)
+		if !matched {
+			blockedActions = append(blockedActions, action)
+		}
+	}
+
+	if len(blockedActions) == 0 {
+		fmt.Println("✓ All actions are allowed by the permission boundary")
+		return
+	}
+
+	// Output results
+	switch *outputFormat {
+	case "json":
+		output, _ := json.MarshalIndent(blockedActions, "", "  ")
+		fmt.Println(string(output))
+
+	case "table":
+		fmt.Printf("BLOCKED ACTION\n")
+		fmt.Printf("%s\n", strings.Repeat("-", 60))
+		for _, action := range blockedActions {
+			fmt.Printf("%s\n", action)
+		}
+		fmt.Printf("\nTotal: %d blocked action(s)\n", len(blockedActions))
+
+	default: // list
+		fmt.Println("✗ Blocked actions (not allowed by permission boundary):")
+		for _, action := range blockedActions {
+			fmt.Printf("  %s\n", action)
+		}
+		fmt.Printf("\nTotal: %d blocked action(s)\n", len(blockedActions))
+	}
+
+	// Exit with error code if there are blocked actions
+	os.Exit(1)
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "AWS IAM Action Matcher\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: %s <command> [options]\n\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "Commands:\n")
+	fmt.Fprintf(os.Stderr, "  pb-check              Check if an action matches permission boundary patterns\n")
+	fmt.Fprintf(os.Stderr, "  get-blocked-actions   Extract actions from a policy that are blocked by permission boundary\n")
+	fmt.Fprintf(os.Stderr, "\nRun '%s <command> -h' for more information on a command.\n", os.Args[0])
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	command := os.Args[1]
+
+	switch command {
+	case "pb-check":
+		pbCheckCommand(os.Args[2:])
+	case "get-blocked-actions":
+		getBlockedActionsCommand(os.Args[2:])
+	case "-h", "--help", "help":
+		printUsage()
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
+		printUsage()
 		os.Exit(1)
 	}
 }
