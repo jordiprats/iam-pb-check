@@ -1,0 +1,159 @@
+name: Test Policy Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-policy-validation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Build the tool
+      run: go build -o ec2-pb-check main.go
+
+    - name: Create test permission boundary
+      run: |
+        cat > test-pb.json <<'EOF'
+        {
+          "PolicyVersion": {
+            "Document": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "*",
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "NotAction": [
+                    "ec2:Describe*",
+                    "ec2:CreateTags",
+                    "s3:Get*",
+                    "s3:List*",
+                    "iam:Get*",
+                    "iam:List*"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+        EOF
+
+    - name: Create test policy
+      run: |
+        cat > test-policy.json <<'EOF'
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "ec2:DescribeInstances",
+                "ec2:DescribeSecurityGroups",
+                "ec2:CreateTags",
+                "ec2:RunInstances",
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:ListBucket",
+                "iam:GetUser",
+                "iam:CreateRole"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+        EOF
+
+    - name: Run policy validation
+      id: validate
+      run: |
+        # Run the tool and capture JSON output
+        ./ec2-pb-check check-policy -pb test-pb.json -format json test-policy.json > result.json || true
+        
+        # Extract counts using jq
+        ALLOWED=$(jq '.summary.allowed' result.json)
+        BLOCKED=$(jq '.summary.blocked' result.json)
+        
+        echo "allowed=$ALLOWED" >> $GITHUB_OUTPUT
+        echo "blocked=$BLOCKED" >> $GITHUB_OUTPUT
+        
+        # Print results for debugging
+        echo "Allowed actions: $ALLOWED"
+        echo "Blocked actions: $BLOCKED"
+        cat result.json
+
+    - name: Verify results
+      run: |
+        ALLOWED=${{ steps.validate.outputs.allowed }}
+        BLOCKED=${{ steps.validate.outputs.blocked }}
+        
+        # Expected: 6 allowed, 3 blocked
+        # Allowed: ec2:DescribeInstances, ec2:DescribeSecurityGroups, ec2:CreateTags, s3:GetObject, s3:ListBucket, iam:GetUser
+        # Blocked: ec2:RunInstances, s3:PutObject, iam:CreateRole
+        EXPECTED_ALLOWED=6
+        EXPECTED_BLOCKED=3
+        
+        if [ "$ALLOWED" -ne "$EXPECTED_ALLOWED" ]; then
+          echo "❌ Expected $EXPECTED_ALLOWED allowed actions, got $ALLOWED"
+          exit 1
+        fi
+        
+        if [ "$BLOCKED" -ne "$EXPECTED_BLOCKED" ]; then
+          echo "❌ Expected $EXPECTED_BLOCKED blocked actions, got $BLOCKED"
+          exit 1
+        fi
+        
+        echo "✅ All tests passed!"
+        echo "   - Allowed actions: $ALLOWED (expected $EXPECTED_ALLOWED)"
+        echo "   - Blocked actions: $BLOCKED (expected $EXPECTED_BLOCKED)"
+
+    - name: Test single action check
+      run: |
+        # Test actions that should be allowed
+        ./ec2-pb-check check-action -pb test-pb.json ec2:DescribeInstances && echo "✅ ec2:DescribeInstances correctly allowed" || (echo "❌ ec2:DescribeInstances should be allowed" && exit 1)
+        
+        ./ec2-pb-check check-action -pb test-pb.json s3:GetObject && echo "✅ s3:GetObject correctly allowed" || (echo "❌ s3:GetObject should be allowed" && exit 1)
+        
+        # Test actions that should be blocked (exit code 1 means blocked, which is expected)
+        ./ec2-pb-check check-action -pb test-pb.json ec2:RunInstances && (echo "❌ ec2:RunInstances should be blocked" && exit 1) || echo "✅ ec2:RunInstances correctly blocked"
+        
+        ./ec2-pb-check check-action -pb test-pb.json iam:CreateRole && (echo "❌ iam:CreateRole should be blocked" && exit 1) || echo "✅ iam:CreateRole correctly blocked"
+
+    - name: Test simple pattern matching
+      run: |
+        # Create simple pattern file
+        cat > patterns.json <<'EOF'
+        [
+          "ec2:Describe*",
+          "s3:Get*"
+        ]
+        EOF
+        
+        # Test with simple patterns
+        ./ec2-pb-check check-action -pb patterns.json ec2:DescribeInstances && echo "✅ Pattern matching works" || (echo "❌ Pattern matching failed" && exit 1)
+        
+        ./ec2-pb-check check-action -pb patterns.json ec2:RunInstances && (echo "❌ Should not match pattern" && exit 1) || echo "✅ Correctly rejected non-matching action"
+
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: |
+          result.json
+          test-pb.json
+          test-policy.json
