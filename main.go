@@ -37,7 +37,15 @@ type PolicyVersion struct {
 	CreateDate       string         `json:"CreateDate,omitempty"`
 }
 
-func loadPatternsFromFile(filename string) ([]string, error) {
+// PermissionBoundary holds the loaded permission boundary in whatever format was available
+type PermissionBoundary struct {
+	Policy           *PolicyDocument
+	Patterns         []string
+	EvaluationMethod string
+}
+
+// loadPermissionBoundaryUnified tries to load the permission boundary in all supported formats
+func loadPermissionBoundaryUnified(filename string) (*PermissionBoundary, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
@@ -46,25 +54,30 @@ func loadPatternsFromFile(filename string) ([]string, error) {
 	// Try to parse as PolicyVersionWrapper (aws iam get-policy-version format)
 	var wrapper PolicyVersionWrapper
 	if err := json.Unmarshal(data, &wrapper); err == nil {
-		patterns := extractPatternsFromPolicy(wrapper.PolicyVersion.Document)
-		if len(patterns) > 0 {
-			return patterns, nil
-		}
+		return &PermissionBoundary{
+			Policy:           &wrapper.PolicyVersion.Document,
+			EvaluationMethod: "Full IAM policy evaluation",
+		}, nil
 	}
 
 	// Try to parse as direct PolicyDocument
 	var policy PolicyDocument
 	if err := json.Unmarshal(data, &policy); err == nil {
-		patterns := extractPatternsFromPolicy(policy)
-		if len(patterns) > 0 {
-			return patterns, nil
+		if len(policy.Statement) > 0 {
+			return &PermissionBoundary{
+				Policy:           &policy,
+				EvaluationMethod: "Full IAM policy evaluation",
+			}, nil
 		}
 	}
 
 	// Try to parse as simple JSON array
 	var patterns []string
-	if err := json.Unmarshal(data, &patterns); err == nil {
-		return patterns, nil
+	if err := json.Unmarshal(data, &patterns); err == nil && len(patterns) > 0 {
+		return &PermissionBoundary{
+			Patterns:         patterns,
+			EvaluationMethod: "Simple pattern matching",
+		}, nil
 	}
 
 	// If JSON parsing fails, try line-by-line text format
@@ -82,32 +95,23 @@ func loadPatternsFromFile(filename string) ([]string, error) {
 		return nil, fmt.Errorf("failed to scan file: %w", err)
 	}
 
-	if len(patterns) == 0 {
-		return nil, fmt.Errorf("no patterns found in file")
+	if len(patterns) > 0 {
+		return &PermissionBoundary{
+			Patterns:         patterns,
+			EvaluationMethod: "Simple pattern matching",
+		}, nil
 	}
 
-	return patterns, nil
+	return nil, fmt.Errorf("no valid permission boundary found in file")
 }
 
-func loadPermissionBoundary(filename string) (PolicyDocument, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return PolicyDocument{}, fmt.Errorf("failed to read file: %w", err)
+// isActionAllowed checks if an action is allowed using the appropriate evaluation method
+func isActionAllowed(action string, pb *PermissionBoundary) bool {
+	if pb.Policy != nil {
+		return evaluatePermissionBoundary(action, *pb.Policy)
 	}
-
-	// Try to parse as PolicyVersionWrapper (aws iam get-policy-version format)
-	var wrapper PolicyVersionWrapper
-	if err := json.Unmarshal(data, &wrapper); err == nil {
-		return wrapper.PolicyVersion.Document, nil
-	}
-
-	// Try to parse as direct PolicyDocument
-	var policy PolicyDocument
-	if err := json.Unmarshal(data, &policy); err == nil {
-		return policy, nil
-	}
-
-	return PolicyDocument{}, fmt.Errorf("unable to parse permission boundary policy")
+	matched, _ := matchesAnyPattern(action, pb.Patterns)
+	return matched
 }
 
 // evaluatePermissionBoundary checks if an action is allowed by the permission boundary
@@ -153,20 +157,6 @@ func evaluatePermissionBoundary(action string, policy PolicyDocument) bool {
 	}
 
 	return allowed
-}
-
-func extractPatternsFromPolicy(policy PolicyDocument) []string {
-	var patterns []string
-
-	for _, statement := range policy.Statement {
-		// For permission boundaries, we want patterns from Deny statements with NotAction
-		// These represent the actions that are NOT denied (i.e., allowed)
-		if statement.Effect == "Deny" && statement.NotAction != nil {
-			patterns = append(patterns, extractStrings(statement.NotAction)...)
-		}
-	}
-
-	return patterns
 }
 
 func extractStrings(value interface{}) []string {
@@ -253,39 +243,34 @@ func checkActionCommand(args []string) {
 
 	action := fs.Arg(0)
 
-	// Try to load as full policy document first
-	pbPolicy, err := loadPermissionBoundary(*configFile)
-	if err == nil {
-		// Evaluate using full policy logic
-		fmt.Fprintf(os.Stderr, "Evaluation method: Full IAM policy evaluation\n\n")
-		if evaluatePermissionBoundary(action, pbPolicy) {
-			fmt.Printf("✅ '%s' is ALLOWED by the permission boundary\n", action)
-			os.Exit(0)
-		} else {
-			fmt.Printf("❌ '%s' is DENIED by the permission boundary\n", action)
-			os.Exit(1)
-		}
-	}
-
-	// Fallback to pattern matching for simple pattern files
-	patterns, err := loadPatternsFromFile(*configFile)
+	// Load permission boundary
+	pb, err := loadPermissionBoundaryUnified(*configFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Evaluation method: Simple pattern matching\n\n")
+	fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
 
-	matched, matchingPatterns := matchesAnyPattern(action, patterns)
-
-	if matched {
-		fmt.Printf("✅ '%s' matches the following pattern(s):\n", action)
-		for _, pattern := range matchingPatterns {
-			fmt.Printf("  - %s\n", pattern)
+	if isActionAllowed(action, pb) {
+		if pb.Policy != nil {
+			fmt.Printf("✅ '%s' is ALLOWED by the permission boundary\n", action)
+		} else {
+			matched, matchingPatterns := matchesAnyPattern(action, pb.Patterns)
+			if matched {
+				fmt.Printf("✅ '%s' matches the following pattern(s):\n", action)
+				for _, pattern := range matchingPatterns {
+					fmt.Printf("  - %s\n", pattern)
+				}
+			}
 		}
 		os.Exit(0)
 	} else {
-		fmt.Printf("❌ '%s' does not match any pattern\n", action)
+		if pb.Policy != nil {
+			fmt.Printf("❌ '%s' is DENIED by the permission boundary\n", action)
+		} else {
+			fmt.Printf("❌ '%s' does not match any pattern\n", action)
+		}
 		os.Exit(1)
 	}
 }
@@ -335,38 +320,22 @@ func checkPolicyCommand(args []string) {
 		return
 	}
 
-	// Try to load permission boundary as full policy document first
-	pbPolicy, err := loadPermissionBoundary(*configFile)
+	// Load permission boundary
+	pb, err := loadPermissionBoundaryUnified(*configFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Evaluate all actions
 	var allowedActions []string
 	var blockedActions []string
-	var evaluationMethod string
 
-	if err == nil {
-		// Use full policy evaluation logic
-		evaluationMethod = "Full IAM policy evaluation"
-		for _, action := range actions {
-			if evaluatePermissionBoundary(action, pbPolicy) {
-				allowedActions = append(allowedActions, action)
-			} else {
-				blockedActions = append(blockedActions, action)
-			}
-		}
-	} else {
-		// Fallback to simple pattern matching
-		evaluationMethod = "Simple pattern matching"
-		patterns, err := loadPatternsFromFile(*configFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
-			os.Exit(1)
-		}
-
-		for _, action := range actions {
-			matched, _ := matchesAnyPattern(action, patterns)
-			if matched {
-				allowedActions = append(allowedActions, action)
-			} else {
-				blockedActions = append(blockedActions, action)
-			}
+	for _, action := range actions {
+		if isActionAllowed(action, pb) {
+			allowedActions = append(allowedActions, action)
+		} else {
+			blockedActions = append(blockedActions, action)
 		}
 	}
 
@@ -378,7 +347,7 @@ func checkPolicyCommand(args []string) {
 	switch *outputFormat {
 	case "json":
 		result := map[string]interface{}{
-			"evaluation_method": evaluationMethod,
+			"evaluation_method": pb.EvaluationMethod,
 			"allowed":           allowedActions,
 			"blocked":           blockedActions,
 			"summary": map[string]int{
@@ -390,7 +359,7 @@ func checkPolicyCommand(args []string) {
 		fmt.Println(string(output))
 
 	case "table":
-		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", evaluationMethod)
+		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
 		fmt.Printf("%-60s %s\n", "ACTION", "STATUS")
 		fmt.Printf("%s\n", strings.Repeat("-", 75))
 		for _, action := range allowedActions {
@@ -402,7 +371,7 @@ func checkPolicyCommand(args []string) {
 		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
 
 	default: // list
-		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", evaluationMethod)
+		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
 		if len(allowedActions) > 0 {
 			fmt.Println("✅ Allowed actions:")
 			for _, action := range allowedActions {
