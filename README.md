@@ -1,13 +1,13 @@
-# ec2-pb-check
+# AWS IAM Permission Boundary Checker
 
-A command-line tool for validating AWS IAM actions against permission boundary patterns. Helps identify which actions in your IAM policies are allowed or blocked by your organization's permission boundaries.
+A command-line tool for validating AWS IAM actions against permission boundary policies. Helps identify which actions in your IAM policies are allowed or blocked by your organization's permission boundaries.
 
 ## Overview
 
 This tool provides two main capabilities:
 
-1. **Single Action Check**: Verify if a specific AWS action matches your permission boundary patterns
-2. **Policy Analysis**: Extract all actions from an IAM policy and identify which are allowed vs blocked
+1. **Single Action Check**: Verify if a specific AWS action is allowed by your permission boundary
+2. **Policy Validation**: Analyze all actions in an IAM policy and identify which are allowed vs blocked
 
 ## Installation
 
@@ -33,12 +33,12 @@ go run main.go <command> [options]
 
 ### Commands
 
-#### `ec2-pb-check` - Check Single Action
+#### `check-action` - Check Single Action
 
-Verify if a specific AWS action matches your permission boundary patterns.
+Verify if a specific AWS action is allowed by your permission boundary.
 
 ```bash
-ec2-pb-check pb-check [options] <action>
+ec2-pb-check check-action [options] <action>
 ```
 
 **Options:**
@@ -48,25 +48,28 @@ ec2-pb-check pb-check [options] <action>
 
 ```bash
 # Check if ec2:RunInstances is allowed
-ec2-pb-check pb-check ec2:RunInstances
+ec2-pb-check check-action ec2:RunInstances
 
 # Use custom permission boundary file
-ec2-pb-check pb-check -pb custom-pb.json karpenter:CreateNodePool
+ec2-pb-check check-action -pb custom-pb.json karpenter:CreateNodePool
 
 # Check Karpenter-specific actions
-ec2-pb-check pb-check ec2:CreateFleet
+ec2-pb-check check-action ec2:CreateFleet
+
+# Check EKS actions
+ec2-pb-check check-action eks:DescribeCluster
 ```
 
 **Exit Codes:**
-- `0`: Action matches at least one pattern (allowed)
-- `1`: Action does not match any pattern (blocked)
+- `0`: Action is allowed by the permission boundary
+- `1`: Action is denied by the permission boundary
 
-#### `get-blocked-actions` - Analyze IAM Policy
+#### `check-policy` - Validate IAM Policy
 
-Extract all actions from an IAM policy and determine which are allowed or blocked by the permission boundary.
+Analyze all actions in an IAM policy and determine which are allowed or blocked by the permission boundary.
 
 ```bash
-ec2-pb-check get-blocked-actions [options] <policy-file>
+ec2-pb-check check-policy [options] <policy-file>
 ```
 
 **Options:**
@@ -77,21 +80,116 @@ ec2-pb-check get-blocked-actions [options] <policy-file>
 
 ```bash
 # Analyze a policy with list output (default)
-ec2-pb-check get-blocked-actions karpenter-role.json
+ec2-pb-check check-policy karpenter-role.json
 
 # JSON output for programmatic use
-ec2-pb-check get-blocked-actions -format json karpenter-role.json
+ec2-pb-check check-policy -format json karpenter-role.json
 
 # Table format for easy reading
-ec2-pb-check get-blocked-actions -format table karpenter-role.json
+ec2-pb-check check-policy -format table karpenter-role.json
 
 # Use custom permission boundary
-ec2-pb-check get-blocked-actions -pb ssg-pb.json node-role.json
+ec2-pb-check check-policy -pb ssg-pb.json node-role.json
 ```
 
 **Exit Codes:**
 - `0`: All actions are allowed
 - `1`: One or more actions are blocked
+
+## Permission Boundary Format
+
+The tool supports multiple permission boundary formats with different evaluation behaviors:
+
+### Full Policy Formats (Recommended)
+
+These formats use **proper IAM evaluation logic** including Allow statements, Deny statements, and NotAction handling. Use these for accurate permission boundary validation.
+
+#### AWS IAM GetPolicyVersion Format
+Direct output from `aws iam get-policy-version`:
+
+```json
+{
+  "PolicyVersion": {
+    "Document": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "*",
+          "Resource": "*"
+        },
+        {
+          "Effect": "Deny",
+          "Resource": "*",
+          "NotAction": [
+            "ec2:Describe*",
+            "ec2:CreateTags",
+            "kms:Decrypt"
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Standard Policy Document Format
+Standard IAM policy document:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Deny",
+      "Resource": "*",
+      "NotAction": ["ec2:Describe*", "kms:*"]
+    }
+  ]
+}
+```
+
+**Evaluation Logic:**
+1. Check Allow statements - if action matches, it's potentially allowed
+2. Check Deny statements - if action matches, it's explicitly denied
+3. Special handling for NotAction in Deny statements - denies everything EXCEPT listed patterns
+4. Explicit Deny always wins over Allow
+
+### Simple Pattern Formats
+
+These formats use **basic wildcard pattern matching only**. Use these for simple allowlists where you just want to check if an action matches any pattern.
+
+#### Simple Pattern Array
+```json
+[
+  "ec2:Describe*",
+  "ec2:CreateTags",
+  "kms:*"
+]
+```
+
+#### Plain Text (one pattern per line)
+```
+ec2:Describe*
+ec2:CreateTags
+kms:*
+# Comments are supported
+```
+
+**Evaluation Logic:**
+- Actions matching any pattern → Allowed
+- Actions not matching any pattern → Blocked
+- No support for Allow/Deny/NotAction logic
+
+### Which Format Should I Use?
+
+- **Use full policy formats** when validating against real AWS permission boundaries.
+- **Use simple formats** for quick checks against a simple allowlist of patterns
 
 ## Output Formats
 
