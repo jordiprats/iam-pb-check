@@ -18,10 +18,23 @@ type PolicyDocument struct {
 }
 
 type Statement struct {
-	Sid      string      `json:"Sid,omitempty"`
-	Effect   string      `json:"Effect"`
-	Action   interface{} `json:"Action,omitempty"`
-	Resource interface{} `json:"Resource,omitempty"`
+	Sid       string      `json:"Sid,omitempty"`
+	Effect    string      `json:"Effect"`
+	Action    interface{} `json:"Action,omitempty"`
+	NotAction interface{} `json:"NotAction,omitempty"`
+	Resource  interface{} `json:"Resource,omitempty"`
+}
+
+// AWS IAM GetPolicyVersion response structure
+type PolicyVersionWrapper struct {
+	PolicyVersion PolicyVersion `json:"PolicyVersion"`
+}
+
+type PolicyVersion struct {
+	Document         PolicyDocument `json:"Document"`
+	VersionId        string         `json:"VersionId,omitempty"`
+	IsDefaultVersion bool           `json:"IsDefaultVersion,omitempty"`
+	CreateDate       string         `json:"CreateDate,omitempty"`
 }
 
 func loadPatternsFromFile(filename string) ([]string, error) {
@@ -30,7 +43,25 @@ func loadPatternsFromFile(filename string) ([]string, error) {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Try to parse as JSON first
+	// Try to parse as PolicyVersionWrapper (aws iam get-policy-version format)
+	var wrapper PolicyVersionWrapper
+	if err := json.Unmarshal(data, &wrapper); err == nil {
+		patterns := extractPatternsFromPolicy(wrapper.PolicyVersion.Document)
+		if len(patterns) > 0 {
+			return patterns, nil
+		}
+	}
+
+	// Try to parse as direct PolicyDocument
+	var policy PolicyDocument
+	if err := json.Unmarshal(data, &policy); err == nil {
+		patterns := extractPatternsFromPolicy(policy)
+		if len(patterns) > 0 {
+			return patterns, nil
+		}
+	}
+
+	// Try to parse as simple JSON array
 	var patterns []string
 	if err := json.Unmarshal(data, &patterns); err == nil {
 		return patterns, nil
@@ -56,6 +87,37 @@ func loadPatternsFromFile(filename string) ([]string, error) {
 	}
 
 	return patterns, nil
+}
+
+func extractPatternsFromPolicy(policy PolicyDocument) []string {
+	var patterns []string
+
+	for _, statement := range policy.Statement {
+		// For permission boundaries, we want patterns from Deny statements with NotAction
+		// These represent the actions that are NOT denied (i.e., allowed)
+		if statement.Effect == "Deny" && statement.NotAction != nil {
+			patterns = append(patterns, extractStrings(statement.NotAction)...)
+		}
+	}
+
+	return patterns
+}
+
+func extractStrings(value interface{}) []string {
+	var result []string
+
+	switch v := value.(type) {
+	case string:
+		result = append(result, v)
+	case []interface{}:
+		for _, item := range v {
+			if str, ok := item.(string); ok {
+				result = append(result, str)
+			}
+		}
+	}
+
+	return result
 }
 
 func matchesAnyPattern(action string, patterns []string) (bool, []string) {
