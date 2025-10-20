@@ -105,7 +105,7 @@ func extractActions(policy PolicyDocument) []string {
 
 func pbCheckCommand(args []string) {
 	fs := flag.NewFlagSet("pb-check", flag.ExitOnError)
-	configFile := fs.String("config", "pb.json", "Path to the patterns config file (JSON or text format)")
+	configFile := fs.String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s pb-check [options] <action>\n\n", os.Args[0])
@@ -113,7 +113,7 @@ func pbCheckCommand(args []string) {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s pb-check -config pb.json ec2:RunInstances\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s pb-check -pb pb.json ec2:RunInstances\n", os.Args[0])
 	}
 
 	fs.Parse(args)
@@ -148,7 +148,7 @@ func pbCheckCommand(args []string) {
 
 func getBlockedActionsCommand(args []string) {
 	fs := flag.NewFlagSet("get-blocked-actions", flag.ExitOnError)
-	configFile := fs.String("config", "pb.json", "Path to the permission boundary patterns config file")
+	configFile := fs.String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
 	outputFormat := fs.String("format", "list", "Output format: list, json, or table")
 
 	fs.Usage = func() {
@@ -159,7 +159,7 @@ func getBlockedActionsCommand(args []string) {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions policy.json\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -format json policy.json\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -config pb.json policy.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -pb pb.json policy.json\n", os.Args[0])
 	}
 
 	fs.Parse(args)
