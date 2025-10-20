@@ -23,13 +23,13 @@ jobs:
       run: go mod tidy
 
     - name: Build the tool
-      run: go build -o ec2-pb-check main.go
+      run: go build -o iam-pb-check main.go
 
     - name: Run policy validation
       id: validate
       run: |
         # Run the tool and capture JSON output
-        ./ec2-pb-check check-policy -pb testdata/test-pb.json -format json testdata/test-policy.json > result.json || true
+        ./iam-pb-check check-policy -pb testdata/test-pb.json -format json testdata/test-policy.json > result.json || true
         
         # Extract counts using jq
         ALLOWED=$(jq '.summary.allowed' result.json)
@@ -71,18 +71,18 @@ jobs:
     - name: Test single action check
       run: |
         # Test actions that should be allowed
-        ./ec2-pb-check check-action -pb testdata/test-pb.json ec2:DescribeInstances && echo "✅ ec2:DescribeInstances correctly allowed" || (echo "❌ ec2:DescribeInstances should be allowed" && exit 1)
+        ./iam-pb-check check-action -pb testdata/test-pb.json ec2:DescribeInstances && echo "✅ ec2:DescribeInstances correctly allowed" || (echo "❌ ec2:DescribeInstances should be allowed" && exit 1)
         
-        ./ec2-pb-check check-action -pb testdata/test-pb.json s3:GetObject && echo "✅ s3:GetObject correctly allowed" || (echo "❌ s3:GetObject should be allowed" && exit 1)
+        ./iam-pb-check check-action -pb testdata/test-pb.json s3:GetObject && echo "✅ s3:GetObject correctly allowed" || (echo "❌ s3:GetObject should be allowed" && exit 1)
         
         # Test actions that should be blocked (exit code 1 means blocked, which is expected)
-        ./ec2-pb-check check-action -pb testdata/test-pb.json ec2:RunInstances && (echo "❌ ec2:RunInstances should be blocked" && exit 1) || echo "✅ ec2:RunInstances correctly blocked"
+        ./iam-pb-check check-action -pb testdata/test-pb.json ec2:RunInstances && (echo "❌ ec2:RunInstances should be blocked" && exit 1) || echo "✅ ec2:RunInstances correctly blocked"
         
-        ./ec2-pb-check check-action -pb testdata/test-pb.json iam:CreateRole && (echo "❌ iam:CreateRole should be blocked" && exit 1) || echo "✅ iam:CreateRole correctly blocked"
+        ./iam-pb-check check-action -pb testdata/test-pb.json iam:CreateRole && (echo "❌ iam:CreateRole should be blocked" && exit 1) || echo "✅ iam:CreateRole correctly blocked"
 
     - name: Test simple pattern matching
       run: |      
         # Test with simple patterns
-        ./ec2-pb-check check-action -pb testdata/patterns.json ec2:DescribeInstances && echo "✅ Pattern matching works" || (echo "❌ Pattern matching failed" && exit 1)
+        ./iam-pb-check check-action -pb testdata/patterns.json ec2:DescribeInstances && echo "✅ Pattern matching works" || (echo "❌ Pattern matching failed" && exit 1)
         
-        ./ec2-pb-check check-action -pb testdata/patterns.json ec2:RunInstances && (echo "❌ Should not match pattern" && exit 1) || echo "✅ Correctly rejected non-matching action"
+        ./iam-pb-check check-action -pb testdata/patterns.json ec2:RunInstances && (echo "❌ Should not match pattern" && exit 1) || echo "✅ Correctly rejected non-matching action"

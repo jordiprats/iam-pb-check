@@ -1,3 +1,3 @@
-module github.com/jordiprats/ec2-pb-match
+module github.com/jordiprats/iam-pb-check
 
 go 1.24.5
