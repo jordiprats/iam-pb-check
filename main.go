@@ -231,17 +231,17 @@ func extractActions(policy PolicyDocument) []string {
 	return actionsList
 }
 
-func pbCheckCommand(args []string) {
-	fs := flag.NewFlagSet("pb-check", flag.ExitOnError)
+func checkActionCommand(args []string) {
+	fs := flag.NewFlagSet("check-action", flag.ExitOnError)
 	configFile := fs.String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s pb-check [options] <action>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Check if an AWS action matches allowed patterns (permission boundary check)\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s check-action [options] <action>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Check if an AWS action is allowed by the permission boundary\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s pb-check -pb pb.json ec2:RunInstances\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s check-action -pb pb.json ec2:RunInstances\n", os.Args[0])
 	}
 
 	fs.Parse(args)
@@ -287,20 +287,20 @@ func pbCheckCommand(args []string) {
 	}
 }
 
-func getBlockedActionsCommand(args []string) {
-	fs := flag.NewFlagSet("get-blocked-actions", flag.ExitOnError)
+func checkPolicyCommand(args []string) {
+	fs := flag.NewFlagSet("check-policy", flag.ExitOnError)
 	configFile := fs.String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
 	outputFormat := fs.String("format", "list", "Output format: list, json, or table")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s get-blocked-actions [options] <policy-file>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Extract actions from an IAM policy that are blocked by permission boundary\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s check-policy [options] <policy-file>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Check which actions in an IAM policy are allowed or blocked by the permission boundary\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions policy.json\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -format json policy.json\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s get-blocked-actions -pb pb.json policy.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s check-policy policy.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s check-policy -format json policy.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s check-policy -pb pb.json policy.json\n", os.Args[0])
 	}
 
 	fs.Parse(args)
@@ -418,11 +418,11 @@ func getBlockedActionsCommand(args []string) {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "AWS IAM Action Matcher\n\n")
+	fmt.Fprintf(os.Stderr, "AWS IAM Permission Boundary Checker\n\n")
 	fmt.Fprintf(os.Stderr, "Usage: %s <command> [options]\n\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "Commands:\n")
-	fmt.Fprintf(os.Stderr, "  pb-check              Check if an action matches permission boundary patterns\n")
-	fmt.Fprintf(os.Stderr, "  get-blocked-actions   Extract actions from a policy that are blocked by permission boundary\n")
+	fmt.Fprintf(os.Stderr, "  check-action    Check if a single action is allowed by the permission boundary\n")
+	fmt.Fprintf(os.Stderr, "  check-policy    Check which actions in a policy are allowed or blocked\n")
 	fmt.Fprintf(os.Stderr, "\nRun '%s <command> -h' for more information on a command.\n", os.Args[0])
 }
 
@@ -435,10 +435,10 @@ func main() {
 	command := os.Args[1]
 
 	switch command {
-	case "pb-check":
-		pbCheckCommand(os.Args[2:])
-	case "get-blocked-actions":
-		getBlockedActionsCommand(os.Args[2:])
+	case "check-action":
+		checkActionCommand(os.Args[2:])
+	case "check-policy":
+		checkPolicyCommand(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 		os.Exit(0)
