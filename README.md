@@ -1,19 +1,15 @@
 # AWS IAM Permission Boundary Checker
 
-A command-line tool for validating AWS IAM actions against permission boundary policies. Helps identify which actions in your IAM policies are allowed or blocked by your organization's permission boundaries.
+A command-line tool for validating **AWS IAM actions** against **permission boundary policies**. Helps identify which actions in your IAM policies are allowed or blocked by your organization's permission boundaries.
 
 ## Overview
 
-This tool provides two main capabilities:
+This tool allows you to:
 
-1. **Single Action Check**: Verify if a specific AWS action is allowed by your permission boundary
-2. **Policy Validation**: Analyze all actions in an IAM policy and identify which are allowed vs blocked
+1. **Single Action Check**: Verify if a specific AWS action is allowed by your permission boundary.
+2. **Policy Validation**: Analyze all actions in an IAM policy and identify which are allowed vs blocked.
 
 ## Installation
-
-### Prerequisites
-
-- Go 1.16 or later
 
 ### Build from Source
 
