@@ -257,6 +257,7 @@ func checkActionCommand(args []string) {
 	pbPolicy, err := loadPermissionBoundary(*configFile)
 	if err == nil {
 		// Evaluate using full policy logic
+		fmt.Fprintf(os.Stderr, "Evaluation method: Full IAM policy evaluation\n\n")
 		if evaluatePermissionBoundary(action, pbPolicy) {
 			fmt.Printf("✅ '%s' is ALLOWED by the permission boundary\n", action)
 			os.Exit(0)
@@ -272,6 +273,8 @@ func checkActionCommand(args []string) {
 		fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
 		os.Exit(1)
 	}
+
+	fmt.Fprintf(os.Stderr, "Evaluation method: Simple pattern matching\n\n")
 
 	matched, matchingPatterns := matchesAnyPattern(action, patterns)
 
@@ -336,9 +339,11 @@ func checkPolicyCommand(args []string) {
 	pbPolicy, err := loadPermissionBoundary(*configFile)
 	var allowedActions []string
 	var blockedActions []string
+	var evaluationMethod string
 
 	if err == nil {
 		// Use full policy evaluation logic
+		evaluationMethod = "Full IAM policy evaluation"
 		for _, action := range actions {
 			if evaluatePermissionBoundary(action, pbPolicy) {
 				allowedActions = append(allowedActions, action)
@@ -348,6 +353,7 @@ func checkPolicyCommand(args []string) {
 		}
 	} else {
 		// Fallback to simple pattern matching
+		evaluationMethod = "Simple pattern matching"
 		patterns, err := loadPatternsFromFile(*configFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
@@ -372,8 +378,9 @@ func checkPolicyCommand(args []string) {
 	switch *outputFormat {
 	case "json":
 		result := map[string]interface{}{
-			"allowed": allowedActions,
-			"blocked": blockedActions,
+			"evaluation_method": evaluationMethod,
+			"allowed":           allowedActions,
+			"blocked":           blockedActions,
 			"summary": map[string]int{
 				"allowed": len(allowedActions),
 				"blocked": len(blockedActions),
@@ -383,6 +390,7 @@ func checkPolicyCommand(args []string) {
 		fmt.Println(string(output))
 
 	case "table":
+		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", evaluationMethod)
 		fmt.Printf("%-60s %s\n", "ACTION", "STATUS")
 		fmt.Printf("%s\n", strings.Repeat("-", 75))
 		for _, action := range allowedActions {
@@ -394,6 +402,7 @@ func checkPolicyCommand(args []string) {
 		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
 
 	default: // list
+		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", evaluationMethod)
 		if len(allowedActions) > 0 {
 			fmt.Println("✅ Allowed actions:")
 			for _, action := range allowedActions {
