@@ -89,6 +89,72 @@ func loadPatternsFromFile(filename string) ([]string, error) {
 	return patterns, nil
 }
 
+func loadPermissionBoundary(filename string) (PolicyDocument, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return PolicyDocument{}, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Try to parse as PolicyVersionWrapper (aws iam get-policy-version format)
+	var wrapper PolicyVersionWrapper
+	if err := json.Unmarshal(data, &wrapper); err == nil {
+		return wrapper.PolicyVersion.Document, nil
+	}
+
+	// Try to parse as direct PolicyDocument
+	var policy PolicyDocument
+	if err := json.Unmarshal(data, &policy); err == nil {
+		return policy, nil
+	}
+
+	return PolicyDocument{}, fmt.Errorf("unable to parse permission boundary policy")
+}
+
+// evaluatePermissionBoundary checks if an action is allowed by the permission boundary
+// IAM evaluation logic:
+// 1. By default, everything is denied
+// 2. Check Allow statements - if any Allow matches, it's potentially allowed
+// 3. Check Deny statements - if any Deny matches, it's explicitly denied (overrides Allow)
+// 4. Special case: NotAction in Deny means "deny everything EXCEPT these actions"
+func evaluatePermissionBoundary(action string, policy PolicyDocument) bool {
+	allowed := false
+	denied := false
+
+	for _, statement := range policy.Statement {
+		if statement.Effect == "Allow" {
+			// Check if this Allow statement applies to the action
+			if statement.Action != nil {
+				patterns := extractStrings(statement.Action)
+				if matches, _ := matchesAnyPattern(action, patterns); matches {
+					allowed = true
+				}
+			}
+		} else if statement.Effect == "Deny" {
+			// Check Deny with NotAction (means deny everything EXCEPT these)
+			if statement.NotAction != nil {
+				patterns := extractStrings(statement.NotAction)
+				// If action does NOT match NotAction patterns, it's denied
+				if matches, _ := matchesAnyPattern(action, patterns); !matches {
+					denied = true
+				}
+			} else if statement.Action != nil {
+				// Regular Deny with Action
+				patterns := extractStrings(statement.Action)
+				if matches, _ := matchesAnyPattern(action, patterns); matches {
+					denied = true
+				}
+			}
+		}
+	}
+
+	// Explicit deny always wins
+	if denied {
+		return false
+	}
+
+	return allowed
+}
+
 func extractPatternsFromPolicy(policy PolicyDocument) []string {
 	var patterns []string
 
@@ -187,10 +253,23 @@ func pbCheckCommand(args []string) {
 
 	action := fs.Arg(0)
 
-	// Load patterns from config file
+	// Try to load as full policy document first
+	pbPolicy, err := loadPermissionBoundary(*configFile)
+	if err == nil {
+		// Evaluate using full policy logic
+		if evaluatePermissionBoundary(action, pbPolicy) {
+			fmt.Printf("✅ '%s' is ALLOWED by the permission boundary\n", action)
+			os.Exit(0)
+		} else {
+			fmt.Printf("❌ '%s' is DENIED by the permission boundary\n", action)
+			os.Exit(1)
+		}
+	}
+
+	// Fallback to pattern matching for simple pattern files
 	patterns, err := loadPatternsFromFile(*configFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading patterns: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -253,22 +332,35 @@ func getBlockedActionsCommand(args []string) {
 		return
 	}
 
-	// Load patterns
-	patterns, err := loadPatternsFromFile(*configFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading patterns: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Separate allowed and blocked actions
+	// Try to load permission boundary as full policy document first
+	pbPolicy, err := loadPermissionBoundary(*configFile)
 	var allowedActions []string
 	var blockedActions []string
-	for _, action := range actions {
-		matched, _ := matchesAnyPattern(action, patterns)
-		if matched {
-			allowedActions = append(allowedActions, action)
-		} else {
-			blockedActions = append(blockedActions, action)
+
+	if err == nil {
+		// Use full policy evaluation logic
+		for _, action := range actions {
+			if evaluatePermissionBoundary(action, pbPolicy) {
+				allowedActions = append(allowedActions, action)
+			} else {
+				blockedActions = append(blockedActions, action)
+			}
+		}
+	} else {
+		// Fallback to simple pattern matching
+		patterns, err := loadPatternsFromFile(*configFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading permission boundary: %v\n", err)
+			os.Exit(1)
+		}
+
+		for _, action := range actions {
+			matched, _ := matchesAnyPattern(action, patterns)
+			if matched {
+				allowedActions = append(allowedActions, action)
+			} else {
+				blockedActions = append(blockedActions, action)
+			}
 		}
 	}
 
