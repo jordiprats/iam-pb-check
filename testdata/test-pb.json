@@ -1,0 +1,26 @@
+        {
+          "PolicyVersion": {
+            "Document": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "*",
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "NotAction": [
+                    "ec2:Describe*",
+                    "ec2:CreateTags",
+                    "s3:Get*",
+                    "s3:List*",
+                    "iam:Get*",
+                    "iam:List*"
+                  ]
+                }
+              ]
+            }
+          }
+        }

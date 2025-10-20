@@ -1,0 +1,4 @@
+[
+    "ec2:Describe*",
+    "s3:Get*"
+]
