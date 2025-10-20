@@ -19,6 +19,9 @@ jobs:
       with:
         go-version: '1.21'
 
+    - name: Mod tidy
+      run: go mod tidy
+
     - name: Build the tool
       run: go build -o ec2-pb-check main.go
 
