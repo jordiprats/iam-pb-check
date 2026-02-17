@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -174,14 +173,41 @@ func extractStrings(value interface{}) []string {
 	return result
 }
 
+func iamWildcardMatch(pattern, str string) bool {
+	pattern = strings.ToLower(pattern)
+	str = strings.ToLower(str)
+
+	p, s := 0, 0
+	pStar, sStar := -1, -1
+
+	for s < len(str) {
+		if p < len(pattern) && (pattern[p] == '?' || pattern[p] == str[s]) {
+			p++
+			s++
+		} else if p < len(pattern) && pattern[p] == '*' {
+			pStar = p
+			sStar = s
+			p++
+		} else if pStar >= 0 {
+			p = pStar + 1
+			sStar++
+			s = sStar
+		} else {
+			return false
+		}
+	}
+
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+
+	return p == len(pattern)
+}
+
 func matchesAnyPattern(action string, patterns []string) (bool, []string) {
 	var matches []string
 	for _, pattern := range patterns {
-		matched, err := filepath.Match(pattern, action)
-		if err != nil {
-			continue
-		}
-		if matched {
+		if iamWildcardMatch(pattern, action) {
 			matches = append(matches, pattern)
 		}
 	}
@@ -235,10 +261,10 @@ func newRootCmd() *cobra.Command {
 		Long:  "Validate AWS IAM actions and policies against a permission boundary definition.",
 	}
 
-	root.CompletionOptions.DisableDefaultCmd = true
-
 	// Persistent flag shared by all subcommands
 	root.PersistentFlags().String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
+
+	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.AddCommand(newCheckActionCmd())
 	root.AddCommand(newCheckPolicyCmd())
