@@ -44,6 +44,12 @@ type PermissionBoundary struct {
 	EvaluationMethod string
 }
 
+// ExtractedActions holds actions separated by their effect in the source policy
+type ExtractedActions struct {
+	AllowActions []string
+	DenyActions  []string
+}
+
 // loadPermissionBoundaryUnified tries to load the permission boundary in all supported formats
 func loadPermissionBoundaryUnified(filename string) (*PermissionBoundary, error) {
 	data, err := os.ReadFile(filename)
@@ -190,40 +196,48 @@ func matchesAnyPattern(action string, patterns []string) (bool, []string) {
 	return len(matches) > 0, matches
 }
 
-func extractActions(policy PolicyDocument) []string {
-	actionsMap := make(map[string]bool)
+// extractActions separates actions by their Effect (Allow vs Deny) in the source policy
+func extractActions(policy PolicyDocument) ExtractedActions {
+	allowMap := make(map[string]bool)
+	denyMap := make(map[string]bool)
 
 	for _, statement := range policy.Statement {
 		if statement.Action == nil {
 			continue
 		}
 
-		// Only consider Allow statements for extracting actions
-		if statement.Effect != "Allow" {
-			continue
+		target := allowMap
+		if statement.Effect == "Deny" {
+			target = denyMap
 		}
 
-		// Action can be a string or array of strings
 		switch actions := statement.Action.(type) {
 		case string:
-			actionsMap[actions] = true
+			target[actions] = true
 		case []interface{}:
 			for _, action := range actions {
 				if actionStr, ok := action.(string); ok {
-					actionsMap[actionStr] = true
+					target[actionStr] = true
 				}
 			}
 		}
 	}
 
-	// Convert map to sorted slice
-	var actionsList []string
-	for action := range actionsMap {
-		actionsList = append(actionsList, action)
+	// Convert maps to sorted slices
+	var allowList, denyList []string
+	for action := range allowMap {
+		allowList = append(allowList, action)
 	}
-	sort.Strings(actionsList)
+	for action := range denyMap {
+		denyList = append(denyList, action)
+	}
+	sort.Strings(allowList)
+	sort.Strings(denyList)
 
-	return actionsList
+	return ExtractedActions{
+		AllowActions: allowList,
+		DenyActions:  denyList,
+	}
 }
 
 func checkActionCommand(args []string) {
@@ -318,9 +332,9 @@ func checkPolicyCommand(args []string) {
 		os.Exit(1)
 	}
 
-	actions := extractActions(policy)
+	extracted := extractActions(policy)
 
-	if len(actions) == 0 {
+	if len(extracted.AllowActions) == 0 && len(extracted.DenyActions) == 0 {
 		fmt.Println("No actions found in policy")
 		return
 	}
@@ -332,11 +346,11 @@ func checkPolicyCommand(args []string) {
 		os.Exit(1)
 	}
 
-	// Evaluate all actions
+	// Evaluate only Allow actions against the permission boundary
 	var allowedActions []string
 	var blockedActions []string
 
-	for _, action := range actions {
+	for _, action := range extracted.AllowActions {
 		if isActionAllowed(action, pb) {
 			allowedActions = append(allowedActions, action)
 		} else {
@@ -344,7 +358,6 @@ func checkPolicyCommand(args []string) {
 		}
 	}
 
-	// Sort both lists alphabetically
 	sort.Strings(allowedActions)
 	sort.Strings(blockedActions)
 
@@ -355,9 +368,11 @@ func checkPolicyCommand(args []string) {
 			"evaluation_method": pb.EvaluationMethod,
 			"allowed":           allowedActions,
 			"blocked":           blockedActions,
+			"skipped_deny":      extracted.DenyActions,
 			"summary": map[string]int{
-				"allowed": len(allowedActions),
-				"blocked": len(blockedActions),
+				"allowed":      len(allowedActions),
+				"blocked":      len(blockedActions),
+				"skipped_deny": len(extracted.DenyActions),
 			},
 		}
 		output, _ := json.MarshalIndent(result, "", "  ")
@@ -373,7 +388,11 @@ func checkPolicyCommand(args []string) {
 		for _, action := range blockedActions {
 			fmt.Printf("%-60s %s\n", action, "❌ BLOCKED")
 		}
-		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
+		for _, action := range extracted.DenyActions {
+			fmt.Printf("%-60s %s\n", action, "⏭️  SKIPPED (denied by policy)")
+		}
+		fmt.Printf("\nSummary: %d allowed, %d blocked, %d skipped (already denied by policy)\n",
+			len(allowedActions), len(blockedActions), len(extracted.DenyActions))
 
 	default: // list
 		fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
@@ -391,7 +410,15 @@ func checkPolicyCommand(args []string) {
 			}
 		}
 
-		fmt.Printf("\nSummary: %d allowed, %d blocked\n", len(allowedActions), len(blockedActions))
+		if len(extracted.DenyActions) > 0 {
+			fmt.Println("\n⏩  Skipped actions (already denied by policy):")
+			for _, action := range extracted.DenyActions {
+				fmt.Printf("  %s\n", action)
+			}
+		}
+
+		fmt.Printf("\nSummary: %d allowed, %d blocked, %d skipped (already denied by policy)\n",
+			len(allowedActions), len(blockedActions), len(extracted.DenyActions))
 	}
 
 	// Exit with error code if there are blocked actions
