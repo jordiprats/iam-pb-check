@@ -38,7 +38,7 @@ iam-pb-check check-action [options] <action>
 ```
 
 **Options:**
-- `-pb <file>`: Path to permission boundary file (default: `pb.json`)
+- `--pb <file>`: Path to permission boundary file (default: `pb.json`)
 
 **Examples:**
 
@@ -47,7 +47,7 @@ iam-pb-check check-action [options] <action>
 iam-pb-check check-action ec2:RunInstances
 
 # Use custom permission boundary file
-iam-pb-check check-action -pb custom-pb.json karpenter:CreateNodePool
+iam-pb-check check-action --pb custom-pb.json karpenter:CreateNodePool
 
 # Check Karpenter-specific actions
 iam-pb-check check-action ec2:CreateFleet
@@ -69,8 +69,8 @@ iam-pb-check check-policy [options] <policy-file>
 ```
 
 **Options:**
-- `-pb <file>`: Path to permission boundary file (default: `pb.json`)
-- `-format <format>`: Output format - `list`, `json`, or `table` (default: `list`)
+- `--pb <file>`: Path to permission boundary file (default: `pb.json`)
+- `--output <format>`: Output format - `list`, `json`, or `table` (default: `list`)
 
 **Examples:**
 
@@ -79,13 +79,13 @@ iam-pb-check check-policy [options] <policy-file>
 iam-pb-check check-policy karpenter-role.json
 
 # JSON output for programmatic use
-iam-pb-check check-policy -format json karpenter-role.json
+iam-pb-check check-policy --output json karpenter-role.json
 
 # Table format for easy reading
-iam-pb-check check-policy -format table karpenter-role.json
+iam-pb-check check-policy --output table karpenter-role.json
 
 # Use custom permission boundary
-iam-pb-check check-policy -pb ssg-pb.json node-role.json
+iam-pb-check check-policy --pb ssg-pb.json node-role.json
 ```
 
 **Exit Codes:**
