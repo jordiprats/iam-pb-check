@@ -14,9 +14,9 @@ This tool allows you to:
 ### Build from Source
 
 ```bash
-git clone https://github.com/jprats/ec2-pb-check
-cd ec2-pb-check
-go build -o ec2-pb-check main.go
+git clone https://github.com/jprats/iam-pb-check
+cd iam-pb-check
+go build -o iam-pb-check main.go
 ```
 
 Or run directly:
@@ -34,7 +34,7 @@ go run main.go <command> [options]
 Verify if a specific AWS action is allowed by your permission boundary.
 
 ```bash
-ec2-pb-check check-action [options] <action>
+iam-pb-check check-action [options] <action>
 ```
 
 **Options:**
@@ -44,16 +44,16 @@ ec2-pb-check check-action [options] <action>
 
 ```bash
 # Check if ec2:RunInstances is allowed
-ec2-pb-check check-action ec2:RunInstances
+iam-pb-check check-action ec2:RunInstances
 
 # Use custom permission boundary file
-ec2-pb-check check-action -pb custom-pb.json karpenter:CreateNodePool
+iam-pb-check check-action -pb custom-pb.json karpenter:CreateNodePool
 
 # Check Karpenter-specific actions
-ec2-pb-check check-action ec2:CreateFleet
+iam-pb-check check-action ec2:CreateFleet
 
 # Check EKS actions
-ec2-pb-check check-action eks:DescribeCluster
+iam-pb-check check-action eks:DescribeCluster
 ```
 
 **Exit Codes:**
@@ -65,7 +65,7 @@ ec2-pb-check check-action eks:DescribeCluster
 Analyze all actions in an IAM policy and determine which are allowed or blocked by the permission boundary.
 
 ```bash
-ec2-pb-check check-policy [options] <policy-file>
+iam-pb-check check-policy [options] <policy-file>
 ```
 
 **Options:**
@@ -76,16 +76,16 @@ ec2-pb-check check-policy [options] <policy-file>
 
 ```bash
 # Analyze a policy with list output (default)
-ec2-pb-check check-policy karpenter-role.json
+iam-pb-check check-policy karpenter-role.json
 
 # JSON output for programmatic use
-ec2-pb-check check-policy -format json karpenter-role.json
+iam-pb-check check-policy -format json karpenter-role.json
 
 # Table format for easy reading
-ec2-pb-check check-policy -format table karpenter-role.json
+iam-pb-check check-policy -format table karpenter-role.json
 
 # Use custom permission boundary
-ec2-pb-check check-policy -pb ssg-pb.json node-role.json
+iam-pb-check check-policy -pb ssg-pb.json node-role.json
 ```
 
 **Exit Codes:**

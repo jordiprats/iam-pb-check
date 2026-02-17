@@ -235,6 +235,8 @@ func newRootCmd() *cobra.Command {
 		Long:  "Validate AWS IAM actions and policies against a permission boundary definition.",
 	}
 
+	root.CompletionOptions.DisableDefaultCmd = true
+
 	// Persistent flag shared by all subcommands
 	root.PersistentFlags().String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
 
@@ -292,11 +294,11 @@ func newCheckPolicyCmd() *cobra.Command {
 		Short: "Check which actions in a policy are allowed or blocked by the permission boundary",
 		Args:  cobra.ExactArgs(1),
 		Example: `  pb-checker check-policy policy.json
-  pb-checker check-policy --format json policy.json
-  pb-checker check-policy --pb boundary.json --format table policy.json`,
+  pb-checker check-policy --output json policy.json
+  pb-checker check-policy --pb boundary.json --output table policy.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pbFile, _ := cmd.Flags().GetString("pb")
-			format, _ := cmd.Flags().GetString("format")
+			format, _ := cmd.Flags().GetString("output")
 			policyFile := args[0]
 
 			// Read and parse policy file
@@ -398,7 +400,7 @@ func newCheckPolicyCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().String("format", "list", "Output format: list, json, or table")
+	cmd.Flags().String("output", "list", "Output format: list, json, or table")
 
 	return cmd
 }
