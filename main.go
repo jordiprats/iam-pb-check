@@ -60,7 +60,7 @@ func loadPermissionBoundaryUnified(filename string) (*PermissionBoundary, error)
 
 	// Try to parse as PolicyVersionWrapper (aws iam get-policy-version format)
 	var wrapper PolicyVersionWrapper
-	if err := json.Unmarshal(data, &wrapper); err == nil {
+	if err := json.Unmarshal(data, &wrapper); err == nil && len(wrapper.PolicyVersion.Document.Statement) > 0 {
 		return &PermissionBoundary{
 			Policy:           &wrapper.PolicyVersion.Document,
 			EvaluationMethod: "Full IAM policy evaluation",
