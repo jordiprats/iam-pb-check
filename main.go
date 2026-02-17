@@ -198,6 +198,11 @@ func extractActions(policy PolicyDocument) []string {
 			continue
 		}
 
+		// Only consider Allow statements for extracting actions
+		if statement.Effect != "Allow" {
+			continue
+		}
+
 		// Action can be a string or array of strings
 		switch actions := statement.Action.(type) {
 		case string:
