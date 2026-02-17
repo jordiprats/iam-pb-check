@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -173,41 +174,31 @@ func extractStrings(value interface{}) []string {
 	return result
 }
 
-func iamWildcardMatch(pattern, str string) bool {
-	pattern = strings.ToLower(pattern)
-	str = strings.ToLower(str)
-
-	p, s := 0, 0
-	pStar, sStar := -1, -1
-
-	for s < len(str) {
-		if p < len(pattern) && (pattern[p] == '?' || pattern[p] == str[s]) {
-			p++
-			s++
-		} else if p < len(pattern) && pattern[p] == '*' {
-			pStar = p
-			sStar = s
-			p++
-		} else if pStar >= 0 {
-			p = pStar + 1
-			sStar++
-			s = sStar
-		} else {
-			return false
+func iamPatternToRegex(pattern string) (*regexp.Regexp, error) {
+	var b strings.Builder
+	b.WriteString("(?i)^")
+	for _, ch := range pattern {
+		switch ch {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteByte('.')
+		default:
+			b.WriteString(regexp.QuoteMeta(string(ch)))
 		}
 	}
-
-	for p < len(pattern) && pattern[p] == '*' {
-		p++
-	}
-
-	return p == len(pattern)
+	b.WriteByte('$')
+	return regexp.Compile(b.String())
 }
 
 func matchesAnyPattern(action string, patterns []string) (bool, []string) {
 	var matches []string
 	for _, pattern := range patterns {
-		if iamWildcardMatch(pattern, action) {
+		re, err := iamPatternToRegex(pattern)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(action) {
 			matches = append(matches, pattern)
 		}
 	}
