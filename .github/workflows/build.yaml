@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@a12a3943b4bdde767164f792f33f40b04645d846
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Are we releasing?
+        id: vars
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            echo "RELEASE - found TAG"
+            echo "release=TRUE" >> $GITHUB_OUTPUT
+          else
+            echo "NOT releasing, no tag found"
+            echo "release=FALSE" >> $GITHUB_OUTPUT
+          fi
+
+      # snapshot build for non-release
+      - name: Test build GoReleaser
+        if: ${{ steps.vars.outputs.release == 'FALSE' }}
+        uses: goreleaser/goreleaser-action@336e29918d653399e599bfca99fadc1d7ffbc9f7 # v4.3.0
+        with:
+          distribution: goreleaser
+          version: v1.19.2
+          args: -f .goreleaser.yaml --snapshot --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # release build
+      - name: Run GoReleaser
+        if: ${{ steps.vars.outputs.release == 'TRUE' }}
+        uses: goreleaser/goreleaser-action@336e29918d653399e599bfca99fadc1d7ffbc9f7 # v4.3.0
+        with:
+          distribution: goreleaser
+          version: v1.19.2
+          args: -f .goreleaser.yaml release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List files
+        if: ${{ steps.vars.outputs.release == 'FALSE' }}
+        run: find dist -ls
+
+      - name: Upload assets
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        if: ${{ steps.vars.outputs.release == 'TRUE' }}
+        with:
+          name: iam-pb-check
+          path: dist/iam-pb-check_*
+          if-no-files-found: error
