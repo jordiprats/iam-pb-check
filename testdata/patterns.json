@@ -1,4 +1,5 @@
 [
     "ec2:Describe*",
-    "s3:Get*"
+    "s3:Get*",
+    "kinesis:*co*"
 ]

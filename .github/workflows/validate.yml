@@ -81,6 +81,8 @@ jobs:
     - name: Test simple pattern matching
       run: |      
         # Test with simple patterns
-        ./iam-pb-check check-action --pb testdata/patterns.json ec2:DescribeInstances && echo "✅ Pattern matching works" || (echo "❌ Pattern matching failed" && exit 1)
+        ./iam-pb-check check-action --pb testdata/patterns.json ec2:DescribeInstances && echo "✅ Simple pattern: matching works" || (echo "❌ Pattern matching failed" && exit 1)
         
+        ./iam-pb-check check-action --pb testdata/patterns.json kinesis:PutRecord && echo "✅ Pattern with double wildcard: matching works" || (echo "❌ Pattern matching failed" && exit 1)
+
         ./iam-pb-check check-action --pb testdata/patterns.json ec2:RunInstances && (echo "❌ Should not match pattern" && exit 1) || echo "✅ Correctly rejected non-matching action"
