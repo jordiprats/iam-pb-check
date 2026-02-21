@@ -9,80 +9,438 @@ on:
 jobs:
   test-policy-validation:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
-        cache: false
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
 
-    - name: Build the tool
-      run: go build -o iam-pb-check main.go
+      - name: Build the tool
+        run: go build -o pb-checker main.go
 
-    - name: Run policy validation
-      id: validate
-      run: |
-        # Run the tool and capture JSON output
-        ./iam-pb-check check-policy --pb testdata/test-pb.json --format json testdata/test-policy.json > result.json || true
-        
-        # Extract counts using jq
-        ALLOWED=$(jq '.summary.allowed' result.json)
-        BLOCKED=$(jq '.summary.blocked' result.json)
-        
-        echo "allowed=$ALLOWED" >> $GITHUB_OUTPUT
-        echo "blocked=$BLOCKED" >> $GITHUB_OUTPUT
-        
-        # Print results for debugging
-        echo "Allowed actions: $ALLOWED"
-        echo "Blocked actions: $BLOCKED"
-        cat result.json
+      - name: Run policy validation (JSON output)
+        id: validate
+        run: |
+          ./pb-checker check-policy --pb testdata/test-pb.json --output json testdata/test-policy.json > result.json || true
+          ALLOWED=$(jq '.summary.allowed' result.json)
+          BLOCKED=$(jq '.summary.blocked' result.json)
+          echo "allowed=$ALLOWED" >> $GITHUB_OUTPUT
+          echo "blocked=$BLOCKED" >> $GITHUB_OUTPUT
+          echo "Allowed actions: $ALLOWED"
+          echo "Blocked actions: $BLOCKED"
+          cat result.json
 
-    - name: Verify results
-      run: |
-        ALLOWED=${{ steps.validate.outputs.allowed }}
-        BLOCKED=${{ steps.validate.outputs.blocked }}
-        
-        # Expected: 6 allowed, 3 blocked
-        # Allowed: ec2:DescribeInstances, ec2:DescribeSecurityGroups, ec2:CreateTags, s3:GetObject, s3:ListBucket, iam:GetUser
-        # Blocked: ec2:RunInstances, s3:PutObject, iam:CreateRole
-        EXPECTED_ALLOWED=6
-        EXPECTED_BLOCKED=3
-        
-        if [ "$ALLOWED" -ne "$EXPECTED_ALLOWED" ]; then
-          echo "❌ Expected $EXPECTED_ALLOWED allowed actions, got $ALLOWED"
-          exit 1
-        fi
-        
-        if [ "$BLOCKED" -ne "$EXPECTED_BLOCKED" ]; then
-          echo "❌ Expected $EXPECTED_BLOCKED blocked actions, got $BLOCKED"
-          exit 1
-        fi
-        
-        echo "✅ All tests passed!"
-        echo "   - Allowed actions: $ALLOWED (expected $EXPECTED_ALLOWED)"
-        echo "   - Blocked actions: $BLOCKED (expected $EXPECTED_BLOCKED)"
+      - name: Verify policy validation results
+        run: |
+          ALLOWED=${{ steps.validate.outputs.allowed }}
+          BLOCKED=${{ steps.validate.outputs.blocked }}
+          # Expected: 6 allowed, 3 blocked
+          # Allowed: ec2:DescribeInstances, ec2:DescribeSecurityGroups, ec2:CreateTags,
+          #          s3:GetObject, s3:ListBucket, iam:GetUser
+          # Blocked: ec2:RunInstances, s3:PutObject, iam:CreateRole
+          EXPECTED_ALLOWED=6
+          EXPECTED_BLOCKED=3
+          if [ "$ALLOWED" -ne "$EXPECTED_ALLOWED" ]; then
+            echo "❌ Expected $EXPECTED_ALLOWED allowed actions, got $ALLOWED"
+            exit 1
+          fi
+          if [ "$BLOCKED" -ne "$EXPECTED_BLOCKED" ]; then
+            echo "❌ Expected $EXPECTED_BLOCKED blocked actions, got $BLOCKED"
+            exit 1
+          fi
+          echo "✅ Policy validation counts correct: $ALLOWED allowed, $BLOCKED blocked"
 
-    - name: Test single action check
-      run: |
-        # Test actions that should be allowed
-        ./iam-pb-check check-action --pb testdata/test-pb.json ec2:DescribeInstances && echo "✅ ec2:DescribeInstances correctly allowed" || (echo "❌ ec2:DescribeInstances should be allowed" && exit 1)
-        
-        ./iam-pb-check check-action --pb testdata/test-pb.json s3:GetObject && echo "✅ s3:GetObject correctly allowed" || (echo "❌ s3:GetObject should be allowed" && exit 1)
-        
-        # Test actions that should be blocked (exit code 1 means blocked, which is expected)
-        ./iam-pb-check check-action --pb testdata/test-pb.json ec2:RunInstances && (echo "❌ ec2:RunInstances should be blocked" && exit 1) || echo "✅ ec2:RunInstances correctly blocked"
-        
-        ./iam-pb-check check-action --pb testdata/test-pb.json iam:CreateRole && (echo "❌ iam:CreateRole should be blocked" && exit 1) || echo "✅ iam:CreateRole correctly blocked"
+      - name: Verify table output format
+        run: |
+          ./pb-checker check-policy --pb testdata/test-pb.json --output table testdata/test-policy.json > table_out.txt || true
+          grep -q "ALLOWED" table_out.txt || (echo "❌ Table output missing ALLOWED column" && exit 1)
+          grep -q "BLOCKED" table_out.txt || (echo "❌ Table output missing BLOCKED column" && exit 1)
+          grep -q "ec2:DescribeInstances" table_out.txt || (echo "❌ Table missing expected action" && exit 1)
+          echo "✅ Table output format correct"
 
-    - name: Test simple pattern matching
-      run: |      
-        # Test with simple patterns
-        ./iam-pb-check check-action --pb testdata/patterns.json ec2:DescribeInstances && echo "✅ Simple pattern: matching works" || (echo "❌ Pattern matching failed" && exit 1)
-        
-        ./iam-pb-check check-action --pb testdata/patterns.json kinesis:PutRecord && echo "✅ Pattern with double wildcard: matching works" || (echo "❌ Pattern matching failed" && exit 1)
+      - name: Test single action check — allowed actions
+        run: |
+          ./pb-checker check-action --pb testdata/test-pb.json ec2:DescribeInstances \
+            && echo "✅ ec2:DescribeInstances correctly allowed" \
+            || (echo "❌ ec2:DescribeInstances should be allowed" && exit 1)
 
-        ./iam-pb-check check-action --pb testdata/patterns.json ec2:RunInstances && (echo "❌ Should not match pattern" && exit 1) || echo "✅ Correctly rejected non-matching action"
+          ./pb-checker check-action --pb testdata/test-pb.json s3:GetObject \
+            && echo "✅ s3:GetObject correctly allowed" \
+            || (echo "❌ s3:GetObject should be allowed" && exit 1)
+
+          ./pb-checker check-action --pb testdata/test-pb.json iam:GetUser \
+            && echo "✅ iam:GetUser correctly allowed" \
+            || (echo "❌ iam:GetUser should be allowed" && exit 1)
+
+      - name: Test single action check — blocked actions
+        run: |
+          ./pb-checker check-action --pb testdata/test-pb.json ec2:RunInstances \
+            && (echo "❌ ec2:RunInstances should be blocked" && exit 1) \
+            || echo "✅ ec2:RunInstances correctly blocked"
+
+          ./pb-checker check-action --pb testdata/test-pb.json iam:CreateRole \
+            && (echo "❌ iam:CreateRole should be blocked" && exit 1) \
+            || echo "✅ iam:CreateRole correctly blocked"
+
+          ./pb-checker check-action --pb testdata/test-pb.json s3:PutObject \
+            && (echo "❌ s3:PutObject should be blocked" && exit 1) \
+            || echo "✅ s3:PutObject correctly blocked"
+
+      - name: Test simple pattern matching
+        run: |
+          ./pb-checker check-action --pb testdata/patterns.json ec2:DescribeInstances \
+            && echo "✅ ec2:DescribeInstances matches ec2:Describe*" \
+            || (echo "❌ Pattern ec2:Describe* should match ec2:DescribeInstances" && exit 1)
+
+          ./pb-checker check-action --pb testdata/patterns.json ec2:DescribeSecurityGroups \
+            && echo "✅ ec2:DescribeSecurityGroups matches ec2:Describe*" \
+            || (echo "❌ Pattern ec2:Describe* should match ec2:DescribeSecurityGroups" && exit 1)
+
+          ./pb-checker check-action --pb testdata/patterns.json s3:GetObject \
+            && echo "✅ s3:GetObject matches s3:Get*" \
+            || (echo "❌ Pattern s3:Get* should match s3:GetObject" && exit 1)
+
+          ./pb-checker check-action --pb testdata/patterns.json kinesis:PutRecord \
+            && echo "✅ kinesis:PutRecord matches kinesis:*co* (Put-rec-ord)" \
+            || (echo "❌ Pattern kinesis:*co* should match kinesis:PutRecord" && exit 1)
+
+          # Negative cases: should not match
+          ./pb-checker check-action --pb testdata/patterns.json ec2:RunInstances \
+            && (echo "❌ ec2:RunInstances should not match any pattern" && exit 1) \
+            || echo "✅ ec2:RunInstances correctly rejected"
+
+          ./pb-checker check-action --pb testdata/patterns.json s3:PutObject \
+            && (echo "❌ s3:PutObject should not match s3:Get*" && exit 1) \
+            || echo "✅ s3:PutObject correctly rejected"
+
+      # -----------------------------------------------------------------------
+      # multi-action check-action
+      # -----------------------------------------------------------------------
+
+      - name: Test multi-action check — all allowed
+        run: |
+          ./pb-checker check-action --pb testdata/test-pb.json \
+            ec2:DescribeInstances s3:GetObject s3:ListBucket iam:GetUser \
+            && echo "✅ All four actions correctly allowed in one invocation" \
+            || (echo "❌ All four actions should be allowed" && exit 1)
+
+      - name: Test multi-action check — mixed result exits non-zero
+        run: |
+          # One blocked action among several allowed ones should make the command fail
+          ./pb-checker check-action --pb testdata/test-pb.json \
+            ec2:DescribeInstances ec2:RunInstances s3:GetObject \
+            && (echo "❌ Should exit non-zero because ec2:RunInstances is blocked" && exit 1) \
+            || echo "✅ Correctly exited non-zero when at least one action is blocked"
+
+      - name: Test multi-action JSON output contains all results
+        run: |
+          # check-policy with a simple 3-action policy is the structured way to get JSON
+          # for multiple actions; verify the summary counts
+          ./pb-checker check-policy --pb testdata/test-pb.json --output json testdata/test-policy.json \
+            | jq -e '.summary.allowed == 6 and .summary.blocked == 3' \
+            && echo "✅ JSON summary counts correct" \
+            || (echo "❌ JSON summary counts wrong" && exit 1)
+
+      # -----------------------------------------------------------------------
+      # stdin support
+      # -----------------------------------------------------------------------
+
+      - name: Test stdin for --pb flag
+        run: |
+          cat testdata/test-pb.json \
+            | ./pb-checker check-action --pb - ec2:DescribeInstances \
+            && echo "✅ --pb - (stdin) works for allowed action" \
+            || (echo "❌ --pb - should work with stdin boundary" && exit 1)
+
+          cat testdata/test-pb.json \
+            | ./pb-checker check-action --pb - ec2:RunInstances \
+            && (echo "❌ ec2:RunInstances should still be blocked via stdin boundary" && exit 1) \
+            || echo "✅ --pb - correctly blocks action via stdin"
+
+      - name: Test stdin for policy file
+        run: |
+          cat testdata/test-policy.json \
+            | ./pb-checker check-policy --pb testdata/test-pb.json --output json - \
+            | jq -e '.summary.allowed == 6 and .summary.blocked == 3' \
+            && echo "✅ Policy file via stdin produces correct counts" \
+            || (echo "❌ stdin policy file produced wrong counts" && exit 1)
+
+      # -----------------------------------------------------------------------
+      # NotAction in source policy — warnings emitted, not silently skipped
+      # -----------------------------------------------------------------------
+
+      - name: Test NotAction source policy — warning present in JSON output
+        run: |
+          ./pb-checker check-policy \
+            --pb testdata/test-pb.json \
+            --output json \
+            testdata/test-notaction-policy.json > notaction_result.json || true
+
+          cat notaction_result.json
+
+          # The NotAction Allow statement must appear in not_action_statements
+          COUNT=$(jq '.summary.not_action_statements' notaction_result.json)
+          if [ "$COUNT" -lt "1" ]; then
+            echo "❌ Expected at least 1 not_action_statements entry, got $COUNT"
+            exit 1
+          fi
+          echo "✅ NotAction statement correctly surfaced: $COUNT entry/entries"
+
+          # Warnings array must be non-empty and mention NotAction
+          jq -e '.warnings | length > 0' notaction_result.json > /dev/null \
+            && echo "✅ Warnings array is non-empty" \
+            || (echo "❌ Warnings array is empty, expected NotAction warning" && exit 1)
+
+          jq -r '.warnings[]' notaction_result.json | grep -qi "notaction" \
+            && echo "✅ NotAction mentioned in warnings" \
+            || (echo "❌ NotAction not mentioned in warnings" && exit 1)
+
+          # The explicit Deny (s3:DeleteBucket) must be skipped, not evaluated
+          jq -e '.summary.skipped_deny == 1' notaction_result.json \
+            && echo "✅ Deny action correctly skipped" \
+            || (echo "❌ Expected 1 skipped_deny" && exit 1)
+
+      - name: Test NotAction source policy — list output mentions manual review
+        run: |
+          ./pb-checker check-policy \
+            --pb testdata/test-pb.json \
+            testdata/test-notaction-policy.json 2>&1 | tee notaction_list.txt || true
+
+          grep -qi "notaction\|manual review" notaction_list.txt \
+            && echo "✅ List output flags NotAction statements for manual review" \
+            || (echo "❌ NotAction manual review note missing from list output" && exit 1)
+
+      # -----------------------------------------------------------------------
+      # wildcard actions in source policy — warnings emitted
+      # -----------------------------------------------------------------------
+
+      - name: Test wildcard source policy — warning emitted, pattern evaluated as-is
+        run: |
+          ./pb-checker check-policy \
+            --pb testdata/test-pb.json \
+            --output json \
+            testdata/test-wildcard-policy.json > wildcard_result.json || true
+
+          cat wildcard_result.json
+
+          # Warnings must mention wildcard
+          jq -r '.warnings[]' wildcard_result.json | grep -qi "wildcard" \
+            && echo "✅ Wildcard warning present" \
+            || (echo "❌ Wildcard warning missing" && exit 1)
+
+          # s3:* is a wildcard Allow action. The boundary (test-pb.json) allows s3:Get* and s3:List*
+          # but denies s3:* (NotAction Deny). s3:* does NOT match any of the NotAction exceptions
+          # (ec2:Describe*, ec2:CreateTags, s3:Get*, s3:List*, iam:Get*, iam:List*), so it is BLOCKED.
+          # ec2:Describe* DOES match ec2:Describe* in the boundary NotAction → ALLOWED.
+          # iam:GetUser matches iam:Get* → ALLOWED.
+          # iam:CreateRole doesn't match NotAction list → BLOCKED.
+          ALLOWED=$(jq '.summary.allowed' wildcard_result.json)
+          BLOCKED=$(jq '.summary.blocked' wildcard_result.json)
+          echo "Wildcard policy: allowed=$ALLOWED blocked=$BLOCKED"
+
+          # ec2:Describe* and iam:GetUser are allowed (2); s3:* and iam:CreateRole are blocked (2)
+          if [ "$ALLOWED" -ne "2" ]; then
+            echo "❌ Expected 2 allowed, got $ALLOWED"
+            exit 1
+          fi
+          if [ "$BLOCKED" -ne "2" ]; then
+            echo "❌ Expected 2 blocked, got $BLOCKED"
+            exit 1
+          fi
+          echo "✅ Wildcard policy evaluated correctly: $ALLOWED allowed, $BLOCKED blocked"
+
+      # -----------------------------------------------------------------------
+      # Condition and NotResource warnings
+      # -----------------------------------------------------------------------
+
+      - name: Test Condition and NotResource warnings in JSON output
+        run: |
+          ./pb-checker check-policy \
+            --pb testdata/test-pb.json \
+            --output json \
+            testdata/test-conditions-policy.json > conditions_result.json || true
+
+          cat conditions_result.json
+
+          WARNINGS=$(jq '[.warnings[] | ascii_downcase]' conditions_result.json)
+
+          echo "$WARNINGS" | grep -q "condition" \
+            && echo "✅ Condition warning present" \
+            || (echo "❌ Condition warning missing" && exit 1)
+
+          echo "$WARNINGS" | grep -q "notresource" \
+            && echo "✅ NotResource warning present" \
+            || (echo "❌ NotResource warning missing" && exit 1)
+
+      # -----------------------------------------------------------------------
+      # diff subcommand
+      # -----------------------------------------------------------------------
+
+      - name: Test diff — detects gained and lost actions
+        run: |
+          # diff exits non-zero when actions are lost; capture result before checking
+          ./pb-checker diff \
+            --pb testdata/test-diff-old-pb.json \
+            --pb-new testdata/test-diff-new-pb.json \
+            --output json \
+            testdata/test-diff-policy.json > diff_result.json || true
+
+          cat diff_result.json
+
+          # Expected: 2 gained (ec2:RunInstances, logs:CreateLogGroup)
+          #           2 lost   (s3:PutObject, iam:GetUser)
+          #           4 unchanged
+          GAINED=$(jq '.summary.gained' diff_result.json)
+          LOST=$(jq '.summary.lost' diff_result.json)
+          UNCHANGED=$(jq '.summary.unchanged' diff_result.json)
+
+          if [ "$GAINED" -ne "2" ]; then
+            echo "❌ Expected 2 gained, got $GAINED"
+            exit 1
+          fi
+          if [ "$LOST" -ne "2" ]; then
+            echo "❌ Expected 2 lost, got $LOST"
+            exit 1
+          fi
+          if [ "$UNCHANGED" -ne "4" ]; then
+            echo "❌ Expected 4 unchanged, got $UNCHANGED"
+            exit 1
+          fi
+          echo "✅ Diff counts correct: $GAINED gained, $LOST lost, $UNCHANGED unchanged"
+
+      - name: Test diff — correct actions in gained/lost lists
+        run: |
+          ./pb-checker diff \
+            --pb testdata/test-diff-old-pb.json \
+            --pb-new testdata/test-diff-new-pb.json \
+            --output json \
+            testdata/test-diff-policy.json > diff_result.json || true
+
+          # Verify exact contents of gained and lost
+          jq -e '[.gained[]] | contains(["ec2:RunInstances","logs:CreateLogGroup"])' diff_result.json \
+            && echo "✅ gained list contains expected actions" \
+            || (echo "❌ gained list wrong: $(jq '.gained' diff_result.json)" && exit 1)
+
+          jq -e '[.lost[]] | contains(["iam:GetUser","s3:PutObject"])' diff_result.json \
+            && echo "✅ lost list contains expected actions" \
+            || (echo "❌ lost list wrong: $(jq '.lost' diff_result.json)" && exit 1)
+
+      - name: Test diff — exits non-zero when access is lost
+        run: |
+          ./pb-checker diff \
+            --pb testdata/test-diff-old-pb.json \
+            --pb-new testdata/test-diff-new-pb.json \
+            testdata/test-diff-policy.json \
+            && (echo "❌ diff should exit non-zero because access is lost" && exit 1) \
+            || echo "✅ diff correctly exits non-zero when access is lost"
+
+      - name: Test diff — exits zero when no access is lost
+        run: |
+          # Swapping old/new: new becomes old (superset), old becomes new (subset)
+          # Now nothing is lost from the subset's perspective — only actions the subset
+          # allowed that old didn't are "gained", none are lost from the subset.
+          # Use identical boundaries to guarantee zero exit.
+          ./pb-checker diff \
+            --pb testdata/test-diff-old-pb.json \
+            --pb-new testdata/test-diff-old-pb.json \
+            testdata/test-diff-policy.json \
+            && echo "✅ diff exits zero when boundaries are identical (nothing lost)" \
+            || (echo "❌ diff should exit zero when boundaries are identical" && exit 1)
+
+      - name: Test diff — list output format
+        run: |
+          ./pb-checker diff \
+            --pb testdata/test-diff-old-pb.json \
+            --pb-new testdata/test-diff-new-pb.json \
+            testdata/test-diff-policy.json > diff_list.txt || true
+
+          grep -q "gained\|Newly allowed" diff_list.txt \
+            && echo "✅ diff list output mentions gained actions" \
+            || (echo "❌ diff list output missing gained section" && exit 1)
+
+          grep -q "lost\|No longer allowed" diff_list.txt \
+            && echo "✅ diff list output mentions lost actions" \
+            || (echo "❌ diff list output missing lost section" && exit 1)
+
+      - name: Test diff — missing --pb-new flag returns error
+        run: |
+          ./pb-checker diff --pb testdata/test-diff-old-pb.json testdata/test-diff-policy.json \
+            && (echo "❌ Should error when --pb-new is missing" && exit 1) \
+            || echo "✅ Correctly errors when --pb-new is missing"
+
+      # -----------------------------------------------------------------------
+      # --version flag
+      # -----------------------------------------------------------------------
+
+      - name: Test --version flag
+        run: |
+          ./pb-checker --version \
+            && echo "✅ --version flag works" \
+            || (echo "❌ --version flag failed" && exit 1)
+
+          # Version output must contain something (either "dev" or a real version)
+          ./pb-checker --version | grep -qE "pb-checker|version" \
+            && echo "✅ Version output looks correct" \
+            || (echo "❌ Version output missing expected text" && exit 1)
+
+      # -----------------------------------------------------------------------
+      # Edge cases
+      # -----------------------------------------------------------------------
+
+      - name: Test case-insensitivity of action matching
+        run: |
+          # IAM action matching is case-insensitive per AWS spec
+          ./pb-checker check-action --pb testdata/test-pb.json EC2:DESCRIBEINSTANCES \
+            && echo "✅ Uppercase action correctly matched (case-insensitive)" \
+            || (echo "❌ Action matching should be case-insensitive" && exit 1)
+
+          ./pb-checker check-action --pb testdata/patterns.json EC2:DESCRIBEINSTANCES \
+            && echo "✅ Pattern matching is case-insensitive" \
+            || (echo "❌ Pattern matching should be case-insensitive" && exit 1)
+
+      - name: Test JSON output has no null arrays
+        run: |
+          # Even with zero blocked actions, arrays should be [] not null
+          ./pb-checker check-policy \
+            --pb testdata/test-diff-old-pb.json \
+            --output json \
+            testdata/test-diff-old-pb.json > no_blocked.json 2>/dev/null || true
+
+          # If the policy itself is the boundary (all actions allowed), check a policy
+          # where nothing is blocked — use a policy subset of what the boundary allows
+          cat > /tmp/fully-allowed-policy.json << 'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:ListBucket"],
+              "Resource": "*"
+            }]
+          }
+          EOF
+          ./pb-checker check-policy \
+            --pb testdata/test-diff-old-pb.json \
+            --output json \
+            /tmp/fully-allowed-policy.json > no_blocked.json
+
+          jq -e '.blocked | type == "array"' no_blocked.json \
+            && echo "✅ blocked is [] not null" \
+            || (echo "❌ blocked should be array, not null" && exit 1)
+
+          jq -e '.skipped_deny | type == "array"' no_blocked.json \
+            && echo "✅ skipped_deny is [] not null" \
+            || (echo "❌ skipped_deny should be array, not null" && exit 1)
+
+      - name: Test unknown action against boundary returns non-zero
+        run: |
+          ./pb-checker check-action --pb testdata/test-pb.json totally:FakeAction \
+            && (echo "❌ Unknown action should be blocked (not in boundary)" && exit 1) \
+            || echo "✅ Unknown action correctly blocked"
+
+      - name: Print final summary
+        if: always()
+        run: echo "All pb-checker tests complete."
