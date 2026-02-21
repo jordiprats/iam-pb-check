@@ -27,7 +27,7 @@ jobs:
       id: validate
       run: |
         # Run the tool and capture JSON output
-        ./iam-pb-check check-policy -pb testdata/test-pb.json -format json testdata/test-policy.json > result.json || true
+        ./iam-pb-check check-policy --pb testdata/test-pb.json --format json testdata/test-policy.json > result.json || true
         
         # Extract counts using jq
         ALLOWED=$(jq '.summary.allowed' result.json)
