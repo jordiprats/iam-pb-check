@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var version = "dev"
+
 // Policy document structures
 type PolicyDocument struct {
 	Version   string      `json:"Version"`
@@ -19,11 +21,15 @@ type PolicyDocument struct {
 }
 
 type Statement struct {
-	Sid       string      `json:"Sid,omitempty"`
-	Effect    string      `json:"Effect"`
-	Action    interface{} `json:"Action,omitempty"`
-	NotAction interface{} `json:"NotAction,omitempty"`
-	Resource  interface{} `json:"Resource,omitempty"`
+	Sid          string      `json:"Sid,omitempty"`
+	Effect       string      `json:"Effect"`
+	Action       interface{} `json:"Action,omitempty"`
+	NotAction    interface{} `json:"NotAction,omitempty"`
+	Resource     interface{} `json:"Resource,omitempty"`
+	NotResource  interface{} `json:"NotResource,omitempty"`
+	Principal    interface{} `json:"Principal,omitempty"`
+	NotPrincipal interface{} `json:"NotPrincipal,omitempty"`
+	Condition    interface{} `json:"Condition,omitempty"`
 }
 
 // AWS IAM GetPolicyVersion response structure
@@ -45,15 +51,42 @@ type PermissionBoundary struct {
 	EvaluationMethod string
 }
 
+// ActionResult describes how an action was evaluated
+type ActionResult struct {
+	Action   string
+	Allowed  bool
+	Source   string // "Allow", "Deny", "NotAction-Deny", "NoMatch", "pattern"
+	Warnings []string
+}
+
 // ExtractedActions holds actions separated by their effect in the source policy
 type ExtractedActions struct {
-	AllowActions []string
-	DenyActions  []string
+	AllowActions    []string
+	DenyActions     []string
+	NotActionStmts  []NotActionStatement // NotAction statements that need special handling
+	HasWildcards    bool
+	HasConditions   bool
+	HasNotResources bool
+}
+
+// NotActionStatement captures a statement using NotAction (grants everything EXCEPT listed actions)
+type NotActionStatement struct {
+	Effect     string
+	NotActions []string
+	Resource   interface{}
+	Condition  interface{}
 }
 
 // loadPermissionBoundaryUnified tries to load the permission boundary in all supported formats
 func loadPermissionBoundaryUnified(filename string) (*PermissionBoundary, error) {
-	data, err := os.ReadFile(filename)
+	var data []byte
+	var err error
+
+	if filename == "-" {
+		data, err = readStdin()
+	} else {
+		data, err = os.ReadFile(filename)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -111,6 +144,26 @@ func loadPermissionBoundaryUnified(filename string) (*PermissionBoundary, error)
 	return nil, fmt.Errorf("no valid permission boundary found in file")
 }
 
+func readStdin() ([]byte, error) {
+	var sb strings.Builder
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		sb.WriteString(scanner.Text())
+		sb.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return []byte(sb.String()), nil
+}
+
+func readPolicyFromPathOrStdin(path string) ([]byte, error) {
+	if path == "-" {
+		return readStdin()
+	}
+	return os.ReadFile(path)
+}
+
 // isActionAllowed checks if an action is allowed using the appropriate evaluation method
 func isActionAllowed(action string, pb *PermissionBoundary) bool {
 	if pb.Policy != nil {
@@ -135,6 +188,12 @@ func evaluatePermissionBoundary(action string, policy PolicyDocument) bool {
 			if stmt.Action != nil {
 				patterns := extractStrings(stmt.Action)
 				if matches, _ := matchesAnyPattern(action, patterns); matches {
+					allowed = true
+				}
+			} else if stmt.NotAction != nil {
+				// NotAction + Allow: allows everything EXCEPT listed actions
+				patterns := extractStrings(stmt.NotAction)
+				if matches, _ := matchesAnyPattern(action, patterns); !matches {
 					allowed = true
 				}
 			}
@@ -205,12 +264,40 @@ func matchesAnyPattern(action string, patterns []string) (bool, []string) {
 	return len(matches) > 0, matches
 }
 
-// extractActions separates actions by their Effect (Allow vs Deny) in the source policy
+// isWildcardAction returns true if the action string contains * or ?
+func isWildcardAction(action string) bool {
+	return strings.ContainsAny(action, "*?")
+}
+
+// extractActions separates actions by their Effect (Allow vs Deny) in the source policy,
+// and captures NotAction statements and metadata about wildcards/conditions.
 func extractActions(policy PolicyDocument) ExtractedActions {
 	allowMap := make(map[string]bool)
 	denyMap := make(map[string]bool)
+	var notActionStmts []NotActionStatement
+	hasWildcards := false
+	hasConditions := false
+	hasNotResources := false
 
 	for _, stmt := range policy.Statement {
+		if stmt.Condition != nil {
+			hasConditions = true
+		}
+		if stmt.NotResource != nil {
+			hasNotResources = true
+		}
+
+		// Handle NotAction statements separately
+		if stmt.NotAction != nil {
+			notActionStmts = append(notActionStmts, NotActionStatement{
+				Effect:     stmt.Effect,
+				NotActions: extractStrings(stmt.NotAction),
+				Resource:   stmt.Resource,
+				Condition:  stmt.Condition,
+			})
+			continue
+		}
+
 		if stmt.Action == nil {
 			continue
 		}
@@ -222,10 +309,16 @@ func extractActions(policy PolicyDocument) ExtractedActions {
 
 		switch actions := stmt.Action.(type) {
 		case string:
+			if isWildcardAction(actions) {
+				hasWildcards = true
+			}
 			target[actions] = true
 		case []interface{}:
 			for _, action := range actions {
 				if s, ok := action.(string); ok {
+					if isWildcardAction(s) {
+						hasWildcards = true
+					}
 					target[s] = true
 				}
 			}
@@ -242,7 +335,56 @@ func extractActions(policy PolicyDocument) ExtractedActions {
 	sort.Strings(allowList)
 	sort.Strings(denyList)
 
-	return ExtractedActions{AllowActions: allowList, DenyActions: denyList}
+	return ExtractedActions{
+		AllowActions:    allowList,
+		DenyActions:     denyList,
+		NotActionStmts:  notActionStmts,
+		HasWildcards:    hasWildcards,
+		HasConditions:   hasConditions,
+		HasNotResources: hasNotResources,
+	}
+}
+
+// policyWarnings builds a list of human-readable caveats for the user
+func policyWarnings(extracted ExtractedActions) []string {
+	var warnings []string
+	if extracted.HasWildcards {
+		warnings = append(warnings, "⚠️  Policy contains wildcard actions (e.g. s3:* or ec2:Describe*). "+
+			"This tool checks the wildcard pattern against the boundary as-is and cannot enumerate "+
+			"every concrete action it covers. A wildcard may match boundary-allowed AND boundary-denied "+
+			"actions simultaneously — review manually.")
+	}
+	if len(extracted.NotActionStmts) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"⚠️  Policy contains %d statement(s) using NotAction. These grant (or deny) a broad "+
+				"set of actions and cannot be fully evaluated without a complete AWS action catalog. "+
+				"Review these statements manually (details shown below).",
+			len(extracted.NotActionStmts)))
+	}
+	if extracted.HasConditions {
+		warnings = append(warnings, "⚠️  Policy contains Condition keys. This tool does not evaluate "+
+			"conditions — an action may appear allowed/blocked here but behave differently at runtime "+
+			"depending on request context.")
+	}
+	if extracted.HasNotResources {
+		warnings = append(warnings, "⚠️  Policy contains NotResource. Resource scope is not evaluated "+
+			"by this tool.")
+	}
+	return warnings
+}
+
+// diffPolicies computes actions in A that are allowed but not in B
+func diffPolicies(pbA, pbB *PermissionBoundary, actionsA []string) (onlyInA, onlyInB []string) {
+	for _, a := range actionsA {
+		inA := isActionAllowed(a, pbA)
+		inB := isActionAllowed(a, pbB)
+		if inA && !inB {
+			onlyInA = append(onlyInA, a)
+		} else if !inA && inB {
+			onlyInB = append(onlyInB, a)
+		}
+	}
+	return
 }
 
 func newRootCmd() *cobra.Command {
@@ -252,27 +394,28 @@ func newRootCmd() *cobra.Command {
 		Long:  "Validate AWS IAM actions and policies against a permission boundary definition.",
 	}
 
-	// Persistent flag shared by all subcommands
-	root.PersistentFlags().String("pb", "pb.json", "Path to the permission boundary file (JSON or text format)")
-
+	root.Version = version
+	root.PersistentFlags().String("pb", "pb.json", "Path to the permission boundary file (JSON or text format), or '-' for stdin")
 	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.AddCommand(newCheckActionCmd())
 	root.AddCommand(newCheckPolicyCmd())
+	root.AddCommand(newDiffCmd())
 
 	return root
 }
 
 func newCheckActionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "check-action <action>",
-		Short: "Check if a single action is allowed by the permission boundary",
-		Args:  cobra.ExactArgs(1),
+		Use:   "check-action <action> [action...]",
+		Short: "Check if one or more actions are allowed by the permission boundary",
+		Args:  cobra.MinimumNArgs(1),
 		Example: `  pb-checker check-action ec2:RunInstances
-  pb-checker check-action --pb boundary.json s3:PutObject`,
+  pb-checker check-action s3:PutObject s3:GetObject ec2:DescribeInstances
+  pb-checker check-action --pb boundary.json s3:PutObject
+  aws iam get-policy-version ... | pb-checker --pb - check-action ec2:RunInstances`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pbFile, _ := cmd.Flags().GetString("pb")
-			action := args[0]
 
 			pb, err := loadPermissionBoundaryUnified(pbFile)
 			if err != nil {
@@ -281,25 +424,31 @@ func newCheckActionCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
 
-			if isActionAllowed(action, pb) {
-				if pb.Policy != nil {
-					fmt.Printf("✅ '%s' is ALLOWED by the permission boundary\n", action)
+			anyDenied := false
+			for _, action := range args {
+				if isWildcardAction(action) {
+					fmt.Fprintf(os.Stderr, "⚠️  '%s' contains a wildcard — result reflects pattern matching only, not full action enumeration.\n", action)
+				}
+				if isActionAllowed(action, pb) {
+					if pb.Policy != nil {
+						fmt.Printf("✅ '%s' is ALLOWED by the permission boundary\n", action)
+					} else {
+						_, matchingPatterns := matchesAnyPattern(action, pb.Patterns)
+						fmt.Printf("✅ '%s' matches pattern(s): %s\n", action, strings.Join(matchingPatterns, ", "))
+					}
 				} else {
-					_, matchingPatterns := matchesAnyPattern(action, pb.Patterns)
-					fmt.Printf("✅ '%s' matches the following pattern(s):\n", action)
-					for _, p := range matchingPatterns {
-						fmt.Printf("  - %s\n", p)
+					anyDenied = true
+					if pb.Policy != nil {
+						fmt.Printf("❌ '%s' is DENIED by the permission boundary\n", action)
+					} else {
+						fmt.Printf("❌ '%s' does not match any pattern\n", action)
 					}
 				}
-				return nil
 			}
 
-			if pb.Policy != nil {
-				fmt.Printf("❌ '%s' is DENIED by the permission boundary\n", action)
-			} else {
-				fmt.Printf("❌ '%s' does not match any pattern\n", action)
+			if anyDenied {
+				os.Exit(1)
 			}
-			os.Exit(1)
 			return nil
 		},
 	}
@@ -312,14 +461,14 @@ func newCheckPolicyCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Example: `  pb-checker check-policy policy.json
   pb-checker check-policy --output json policy.json
-  pb-checker check-policy --pb boundary.json --output table policy.json`,
+  pb-checker check-policy --pb boundary.json --output table policy.json
+  cat policy.json | pb-checker check-policy -`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pbFile, _ := cmd.Flags().GetString("pb")
 			format, _ := cmd.Flags().GetString("output")
 			policyFile := args[0]
 
-			// Read and parse policy file
-			data, err := os.ReadFile(policyFile)
+			data, err := readPolicyFromPathOrStdin(policyFile)
 			if err != nil {
 				return fmt.Errorf("reading policy file: %w", err)
 			}
@@ -330,18 +479,19 @@ func newCheckPolicyCmd() *cobra.Command {
 			}
 
 			extracted := extractActions(policy)
-			if len(extracted.AllowActions) == 0 && len(extracted.DenyActions) == 0 {
+			if len(extracted.AllowActions) == 0 && len(extracted.DenyActions) == 0 && len(extracted.NotActionStmts) == 0 {
 				fmt.Println("No actions found in policy")
 				return nil
 			}
 
-			// Load permission boundary
 			pb, err := loadPermissionBoundaryUnified(pbFile)
 			if err != nil {
 				return fmt.Errorf("loading permission boundary: %w", err)
 			}
 
-			// Evaluate only Allow actions against the permission boundary
+			warnings := policyWarnings(extracted)
+
+			// Evaluate Allow actions against the permission boundary
 			var allowedActions, blockedActions []string
 			for _, action := range extracted.AllowActions {
 				if isActionAllowed(action, pb) {
@@ -353,18 +503,30 @@ func newCheckPolicyCmd() *cobra.Command {
 			sort.Strings(allowedActions)
 			sort.Strings(blockedActions)
 
-			// Output results
+			// Summarise NotAction statements for display
+			var notActionSummaries []string
+			for _, nas := range extracted.NotActionStmts {
+				summary := fmt.Sprintf("Effect=%s NotAction=[%s]", nas.Effect, strings.Join(nas.NotActions, ", "))
+				if nas.Condition != nil {
+					summary += " (has Condition)"
+				}
+				notActionSummaries = append(notActionSummaries, summary)
+			}
+
 			switch format {
 			case "json":
 				result := map[string]interface{}{
-					"evaluation_method": pb.EvaluationMethod,
-					"allowed":           allowedActions,
-					"blocked":           blockedActions,
-					"skipped_deny":      extracted.DenyActions,
+					"evaluation_method":     pb.EvaluationMethod,
+					"allowed":               nullableStringSlice(allowedActions),
+					"blocked":               nullableStringSlice(blockedActions),
+					"skipped_deny":          nullableStringSlice(extracted.DenyActions),
+					"not_action_statements": notActionSummaries,
+					"warnings":              warnings,
 					"summary": map[string]int{
-						"allowed":      len(allowedActions),
-						"blocked":      len(blockedActions),
-						"skipped_deny": len(extracted.DenyActions),
+						"allowed":               len(allowedActions),
+						"blocked":               len(blockedActions),
+						"skipped_deny":          len(extracted.DenyActions),
+						"not_action_statements": len(extracted.NotActionStmts),
 					},
 				}
 				out, _ := json.MarshalIndent(result, "", "  ")
@@ -372,6 +534,7 @@ func newCheckPolicyCmd() *cobra.Command {
 
 			case "table":
 				fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
+				printWarnings(warnings, os.Stderr)
 				fmt.Printf("%-60s %s\n", "ACTION", "STATUS")
 				fmt.Printf("%s\n", strings.Repeat("-", 75))
 				for _, a := range allowedActions {
@@ -381,13 +544,17 @@ func newCheckPolicyCmd() *cobra.Command {
 					fmt.Printf("%-60s %s\n", a, "❌ BLOCKED")
 				}
 				for _, a := range extracted.DenyActions {
-					fmt.Printf("%-60s %s\n", a, "⏭️  SKIPPED (denied by policy)")
+					fmt.Printf("%-60s %s\n", a, "⏭️  SKIPPED (explicitly denied by policy)")
 				}
-				fmt.Printf("\nSummary: %d allowed, %d blocked, %d skipped (already denied by policy)\n",
-					len(allowedActions), len(blockedActions), len(extracted.DenyActions))
+				for _, s := range notActionSummaries {
+					fmt.Printf("%-60s %s\n", s, "⚠️  NOTACTION (manual review needed)")
+				}
+				fmt.Printf("\nSummary: %d allowed, %d blocked, %d skipped (denied by policy), %d NotAction statement(s)\n",
+					len(allowedActions), len(blockedActions), len(extracted.DenyActions), len(extracted.NotActionStmts))
 
 			default: // list
 				fmt.Fprintf(os.Stderr, "Evaluation method: %s\n\n", pb.EvaluationMethod)
+				printWarnings(warnings, os.Stderr)
 				if len(allowedActions) > 0 {
 					fmt.Println("✅ Allowed actions:")
 					for _, a := range allowedActions {
@@ -401,13 +568,19 @@ func newCheckPolicyCmd() *cobra.Command {
 					}
 				}
 				if len(extracted.DenyActions) > 0 {
-					fmt.Println("\n⏭️  Skipped actions (already denied by policy):")
+					fmt.Println("\n⏭️  Skipped actions (explicitly denied by policy, irrelevant to boundary check):")
 					for _, a := range extracted.DenyActions {
 						fmt.Printf("  %s\n", a)
 					}
 				}
-				fmt.Printf("\nSummary: %d allowed, %d blocked, %d skipped (already denied by policy)\n",
-					len(allowedActions), len(blockedActions), len(extracted.DenyActions))
+				if len(notActionSummaries) > 0 {
+					fmt.Println("\n⚠️  NotAction statements (requires manual review):")
+					for _, s := range notActionSummaries {
+						fmt.Printf("  %s\n", s)
+					}
+				}
+				fmt.Printf("\nSummary: %d allowed, %d blocked, %d skipped (denied by policy), %d NotAction statement(s)\n",
+					len(allowedActions), len(blockedActions), len(extracted.DenyActions), len(extracted.NotActionStmts))
 			}
 
 			if len(blockedActions) > 0 {
@@ -418,8 +591,144 @@ func newCheckPolicyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().String("output", "list", "Output format: list, json, or table")
-
 	return cmd
+}
+
+func newDiffCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "diff <policy-file>",
+		Short: "Compare policy actions against two permission boundaries to show what changes",
+		Long: `Loads two permission boundaries (--pb and --pb-new) and reports which Allow actions
+in the given policy would gain or lose access when switching from the old to the new boundary.`,
+		Args: cobra.ExactArgs(1),
+		Example: `  pb-checker diff --pb old-boundary.json --pb-new new-boundary.json policy.json
+  pb-checker diff --pb old-boundary.json --pb-new new-boundary.json --output json policy.json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pbFile, _ := cmd.Flags().GetString("pb")
+			pbNewFile, _ := cmd.Flags().GetString("pb-new")
+			format, _ := cmd.Flags().GetString("output")
+			policyFile := args[0]
+
+			if pbNewFile == "" {
+				return fmt.Errorf("--pb-new is required for the diff subcommand")
+			}
+
+			data, err := readPolicyFromPathOrStdin(policyFile)
+			if err != nil {
+				return fmt.Errorf("reading policy file: %w", err)
+			}
+
+			var policy PolicyDocument
+			if err := json.Unmarshal(data, &policy); err != nil {
+				return fmt.Errorf("parsing policy JSON: %w", err)
+			}
+
+			extracted := extractActions(policy)
+
+			pbOld, err := loadPermissionBoundaryUnified(pbFile)
+			if err != nil {
+				return fmt.Errorf("loading old permission boundary: %w", err)
+			}
+
+			pbNew, err := loadPermissionBoundaryUnified(pbNewFile)
+			if err != nil {
+				return fmt.Errorf("loading new permission boundary: %w", err)
+			}
+
+			// Classify every Allow action
+			type diffEntry struct {
+				Action     string
+				OldAllowed bool
+				NewAllowed bool
+			}
+
+			var entries []diffEntry
+			for _, action := range extracted.AllowActions {
+				entries = append(entries, diffEntry{
+					Action:     action,
+					OldAllowed: isActionAllowed(action, pbOld),
+					NewAllowed: isActionAllowed(action, pbNew),
+				})
+			}
+
+			var gained, lost, unchanged []string
+			for _, e := range entries {
+				switch {
+				case !e.OldAllowed && e.NewAllowed:
+					gained = append(gained, e.Action)
+				case e.OldAllowed && !e.NewAllowed:
+					lost = append(lost, e.Action)
+				default:
+					unchanged = append(unchanged, e.Action)
+				}
+			}
+
+			warnings := policyWarnings(extracted)
+
+			switch format {
+			case "json":
+				result := map[string]interface{}{
+					"gained":    nullableStringSlice(gained),
+					"lost":      nullableStringSlice(lost),
+					"unchanged": nullableStringSlice(unchanged),
+					"warnings":  warnings,
+					"summary": map[string]int{
+						"gained":    len(gained),
+						"lost":      len(lost),
+						"unchanged": len(unchanged),
+					},
+				}
+				out, _ := json.MarshalIndent(result, "", "  ")
+				fmt.Println(string(out))
+
+			default: // list
+				printWarnings(warnings, os.Stderr)
+				if len(gained) > 0 {
+					fmt.Println("🟢 Newly allowed by new boundary (gained access):")
+					for _, a := range gained {
+						fmt.Printf("  %s\n", a)
+					}
+				}
+				if len(lost) > 0 {
+					fmt.Println("\n🔴 No longer allowed by new boundary (lost access):")
+					for _, a := range lost {
+						fmt.Printf("  %s\n", a)
+					}
+				}
+				if len(unchanged) > 0 {
+					fmt.Printf("\n⬜ Unchanged: %d action(s)\n", len(unchanged))
+				}
+				fmt.Printf("\nSummary: %d gained, %d lost, %d unchanged\n", len(gained), len(lost), len(unchanged))
+			}
+
+			// Exit non-zero if any access is lost
+			if len(lost) > 0 {
+				os.Exit(1)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().String("pb-new", "", "Path to the new permission boundary to compare against (required)")
+	cmd.Flags().String("output", "list", "Output format: list or json")
+	return cmd
+}
+
+func printWarnings(warnings []string, w *os.File) {
+	for _, warn := range warnings {
+		fmt.Fprintln(w, warn)
+	}
+	if len(warnings) > 0 {
+		fmt.Fprintln(w)
+	}
+}
+
+// nullableStringSlice returns an empty slice (not nil) so JSON output is [] not null
+func nullableStringSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func main() {
