@@ -1,6 +1,6 @@
-## iamctl pb-check
+## iamctl check-access
 
-Check actions, policies, roles, or CloudFormation templates against a permission boundary
+Check whether actions, policies, roles, or CloudFormation templates are allowed
 
 ### Synopsis
 
@@ -21,6 +21,10 @@ Supported CloudFormation resource types:
   - AWS::IAM::Policy (standalone policy)
   - AWS::IAM::ManagedPolicy (standalone managed policy)
 
+When --role and --action are combined, the tool fetches the role's policies and
+checks whether the specified actions are granted. If a permission boundary is
+available (via --pb or on the role), it is also evaluated.
+
 The permission boundary (--pb) is required for action and policy checks.
 For role checks, if --pb is omitted the role's own permission boundary is fetched from AWS.
 For CloudFormation checks, if --pb is omitted it is resolved from the template.
@@ -34,31 +38,35 @@ Backward compatibility:
   is treated as the CloudFormation template file.
 
 ```
-iamctl pb-check [policy-file] [flags]
+iamctl check-access [policy-file] [flags]
 ```
 
 ### Examples
 
 ```
   # Check specific actions
-  iamctl pb-check --action ec2:RunInstances --pb boundary.json
-  iamctl pb-check --action s3:PutObject --action s3:GetObject --pb boundary.json
+  iamctl check-access --action ec2:RunInstances --pb boundary.json
+  iamctl check-access --action s3:PutObject --action s3:GetObject --pb boundary.json
 
   # Check a policy file
-  iamctl pb-check --pb boundary.json policy.json
-  iamctl pb-check --pb boundary.json --policy-file extra.json policy.json
-  iamctl pb-check --pb boundary.json --managed-policy arn:aws:iam::aws:policy/ReadOnlyAccess
-  iamctl pb-check --pb boundary.json --output json policy.json
+  iamctl check-access --pb boundary.json policy.json
+  iamctl check-access --pb boundary.json --policy-file extra.json policy.json
+  iamctl check-access --pb boundary.json --managed-policy arn:aws:iam::aws:policy/ReadOnlyAccess
+  iamctl check-access --pb boundary.json --output json policy.json
 
   # Check a live AWS role
-  iamctl pb-check --role my-role
-  iamctl pb-check --role my-role --pb boundary.json --output json
-  iamctl pb-check --role my-role --profile staging
+  iamctl check-access --role my-role
+  iamctl check-access --role my-role --pb boundary.json --output json
+  iamctl check-access --role my-role --profile staging
+
+  # Check whether a role can perform specific actions
+  iamctl check-access --role my-role --action s3:GetObject
+  iamctl can --role my-role --action s3:PutObject --action s3:GetObject --output json
 
   # Check a CloudFormation template
-  iamctl pb-check --cf-template template.yaml
-  iamctl pb-check --cf-template template.yaml --resource LambdaRole
-  iamctl pb-check --cf-template template.yaml --pb boundary.json --output sarif
+  iamctl check-access --cf-template template.yaml
+  iamctl check-access --cf-template template.yaml --resource LambdaRole
+  iamctl check-access --cf-template template.yaml --pb boundary.json --output sarif
 ```
 
 ### Options
@@ -66,7 +74,7 @@ iamctl pb-check [policy-file] [flags]
 ```
       --action strings           Action(s) to check directly (can be repeated)
       --cf-template string       Path to a CloudFormation template file
-  -h, --help                     help for pb-check
+  -h, --help                     help for check-access
       --managed-policy strings   ARN of a managed policy to fetch from AWS (can be repeated)
       --output string            Output format: list, json, table, or sarif (sarif only with --cf-template) (default "list")
       --pb string                Path to the permission boundary file (JSON or text format), or '-' for stdin

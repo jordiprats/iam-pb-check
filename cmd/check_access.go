@@ -6,18 +6,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newPbCheckCmd() *cobra.Command {
+func newCheckAccessCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "pb-check [policy-file]",
+		Use: "check-access [policy-file]",
 		Aliases: []string{
-			"check", "pbc",
+			"check", "can",
 			// Legacy command aliases
+			"pb-check", "pbc",
 			"pb-check-action", "check-action", "ca",
 			"pb-check-policy", "check-policy", "cp",
 			"pb-check-role", "check-role", "cr",
 			"pb-check-cf", "check-cf", "check-cloudformation", "ccf",
 		},
-		Short: "Check actions, policies, roles, or CloudFormation templates against a permission boundary",
+		Short: "Check whether actions, policies, roles, or CloudFormation templates are allowed",
 		Long: `Evaluate IAM actions against a permission boundary.
 
 Sources (exactly one required):
@@ -35,6 +36,10 @@ Supported CloudFormation resource types:
   - AWS::IAM::Policy (standalone policy)
   - AWS::IAM::ManagedPolicy (standalone managed policy)
 
+When --role and --action are combined, the tool fetches the role's policies and
+checks whether the specified actions are granted. If a permission boundary is
+available (via --pb or on the role), it is also evaluated.
+
 The permission boundary (--pb) is required for action and policy checks.
 For role checks, if --pb is omitted the role's own permission boundary is fetched from AWS.
 For CloudFormation checks, if --pb is omitted it is resolved from the template.
@@ -48,24 +53,28 @@ Backward compatibility:
   is treated as the CloudFormation template file.`,
 		Args: cobra.ArbitraryArgs,
 		Example: `  # Check specific actions
-  iamctl pb-check --action ec2:RunInstances --pb boundary.json
-  iamctl pb-check --action s3:PutObject --action s3:GetObject --pb boundary.json
+  iamctl check-access --action ec2:RunInstances --pb boundary.json
+  iamctl check-access --action s3:PutObject --action s3:GetObject --pb boundary.json
 
   # Check a policy file
-  iamctl pb-check --pb boundary.json policy.json
-  iamctl pb-check --pb boundary.json --policy-file extra.json policy.json
-  iamctl pb-check --pb boundary.json --managed-policy arn:aws:iam::aws:policy/ReadOnlyAccess
-  iamctl pb-check --pb boundary.json --output json policy.json
+  iamctl check-access --pb boundary.json policy.json
+  iamctl check-access --pb boundary.json --policy-file extra.json policy.json
+  iamctl check-access --pb boundary.json --managed-policy arn:aws:iam::aws:policy/ReadOnlyAccess
+  iamctl check-access --pb boundary.json --output json policy.json
 
   # Check a live AWS role
-  iamctl pb-check --role my-role
-  iamctl pb-check --role my-role --pb boundary.json --output json
-  iamctl pb-check --role my-role --profile staging
+  iamctl check-access --role my-role
+  iamctl check-access --role my-role --pb boundary.json --output json
+  iamctl check-access --role my-role --profile staging
+
+  # Check whether a role can perform specific actions
+  iamctl check-access --role my-role --action s3:GetObject
+  iamctl can --role my-role --action s3:PutObject --action s3:GetObject --output json
 
   # Check a CloudFormation template
-  iamctl pb-check --cf-template template.yaml
-  iamctl pb-check --cf-template template.yaml --resource LambdaRole
-  iamctl pb-check --cf-template template.yaml --pb boundary.json --output sarif`,
+  iamctl check-access --cf-template template.yaml
+  iamctl check-access --cf-template template.yaml --resource LambdaRole
+  iamctl check-access --cf-template template.yaml --pb boundary.json --output sarif`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			actions, _ := cmd.Flags().GetStringSlice("action")
 			roleName, _ := cmd.Flags().GetString("role")
@@ -95,6 +104,17 @@ Backward compatibility:
 			policyFile := ""
 			if len(args) > 0 {
 				policyFile = args[0]
+			}
+
+			// --role + --action is a valid combination: check specific actions against a role
+			if roleName != "" && len(actions) > 0 {
+				if cfTemplate != "" {
+					return fmt.Errorf("--cf-template cannot be combined with --role and --action")
+				}
+				if policyFile != "" {
+					return fmt.Errorf("a policy file argument cannot be combined with --role and --action")
+				}
+				return runCheckRoleAction(cmd, roleName, actions)
 			}
 
 			// Determine how many explicit source flags are set
