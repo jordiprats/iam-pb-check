@@ -1149,8 +1149,8 @@ func TestCheckAccess_ActionMode_PrimaryName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "ALLOWED") {
-		t.Errorf("expected ALLOWED in output, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "ALLOWED") && !strings.Contains(buf.String(), "matches:") {
+		t.Errorf("expected ALLOWED or matches: in output, got: %s", buf.String())
 	}
 }
 
@@ -1182,7 +1182,44 @@ func TestCheckAccess_ActionMode_CanAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "ALLOWED") {
-		t.Errorf("expected ALLOWED in output, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "ALLOWED") && !strings.Contains(buf.String(), "matches:") {
+		t.Errorf("expected ALLOWED or matches: in output, got: %s", buf.String())
+	}
+}
+
+// --- Action mode: verify matching pattern is shown ---
+
+func TestCheckAccess_ActionMode_ShowsMatchingPattern(t *testing.T) {
+	pbFile := filepath.Join("..", "testdata", "test-pb-simple-allow.json")
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	oldStderr := os.Stderr
+	_, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	root := NewRootCmd("test")
+	root.SetArgs([]string{"check-access", "--action", "ec2:DescribeInstances", "--pb", pbFile})
+	err := root.Execute()
+
+	w.Close()
+	wErr.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "matches:") {
+		t.Errorf("expected 'matches:' showing the matching rule, got: %s", output)
+	}
+	if !strings.Contains(output, "ec2:Describe*") {
+		t.Errorf("expected 'ec2:Describe*' pattern in output, got: %s", output)
 	}
 }

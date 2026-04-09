@@ -15,19 +15,38 @@ import (
 
 // statementMatch describes a single policy statement that matched an action.
 type statementMatch struct {
-	PolicyName string      `json:"policy_name"`
-	PolicyType string      `json:"policy_type"` // "managed" or "inline"
-	Effect     string      `json:"effect"`      // "Allow" or "Deny"
-	Sid        string      `json:"sid,omitempty"`
-	Pattern    string      `json:"matched_pattern"`
-	Resources  []string    `json:"resources,omitempty"`
-	Conditions interface{} `json:"conditions,omitempty"`
+	PolicyName  string      `json:"policy_name"`
+	PolicyType  string      `json:"policy_type"` // "managed" or "inline"
+	Effect      string      `json:"effect"`      // "Allow" or "Deny"
+	Sid         string      `json:"sid,omitempty"`
+	Pattern     string      `json:"matched_pattern"`
+	Resources   []string    `json:"resources,omitempty"`
+	Conditions  interface{} `json:"conditions,omitempty"`
+	Conditional bool        `json:"conditional"` // true when Resource != "*" or Condition is present
+}
+
+// isConditionalMatch returns true when the statement has resource restrictions
+// (not just "*") or condition constraints.
+func isConditionalMatch(resources []string, conditions interface{}) bool {
+	if conditions != nil {
+		return true
+	}
+	if len(resources) == 0 {
+		return false
+	}
+	for _, r := range resources {
+		if r != "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // actionCheckResult holds the evaluation result for a single action.
 type actionCheckResult struct {
 	Action          string           `json:"action"`
 	Allowed         bool             `json:"allowed"`
+	Conditional     bool             `json:"conditional"`
 	Reason          string           `json:"reason"`
 	BoundaryAllowed *bool            `json:"boundary_allowed,omitempty"`
 	AllowMatches    []statementMatch `json:"allow_matches,omitempty"`
@@ -112,14 +131,16 @@ func runCheckRoleAction(cmd *cobra.Command, roleName string, actions []string) e
 				}
 
 				if matched, matchingPatterns := matcher.MatchesAnyPattern(action, actionPatterns); matched {
+					resources := matcher.ExtractStrings(stmt.Resource)
 					m := statementMatch{
-						PolicyName: pi.policyName,
-						PolicyType: pi.policyType,
-						Effect:     stmt.Effect,
-						Sid:        stmt.Sid,
-						Pattern:    strings.Join(matchingPatterns, ", "),
-						Resources:  matcher.ExtractStrings(stmt.Resource),
-						Conditions: stmt.Condition,
+						PolicyName:  pi.policyName,
+						PolicyType:  pi.policyType,
+						Effect:      stmt.Effect,
+						Sid:         stmt.Sid,
+						Pattern:     strings.Join(matchingPatterns, ", "),
+						Resources:   resources,
+						Conditions:  stmt.Condition,
+						Conditional: isConditionalMatch(resources, stmt.Condition),
 					}
 					if stmt.Effect == "Deny" {
 						r.DenyMatches = append(r.DenyMatches, m)
@@ -154,6 +175,15 @@ func runCheckRoleAction(cmd *cobra.Command, roleName string, actions []string) e
 		default:
 			r.Allowed = true
 			r.Reason = fmt.Sprintf("granted by %s", r.AllowMatches[0].PolicyName)
+			// Check if ALL allow matches are conditional (restricted by Resource or Condition)
+			allConditional := true
+			for _, m := range r.AllowMatches {
+				if !m.Conditional {
+					allConditional = false
+					break
+				}
+			}
+			r.Conditional = allConditional
 		}
 
 		if !r.Allowed {
@@ -184,7 +214,11 @@ func runCheckRoleAction(cmd *cobra.Command, roleName string, actions []string) e
 			}
 
 			if r.Allowed {
-				fmt.Printf("🟢  %-58s ALLOWED\n", r.Action)
+				if r.Conditional {
+					fmt.Printf("🟡  %-58s ALLOWED (conditional — resource/condition restrictions apply)\n", r.Action)
+				} else {
+					fmt.Printf("🟢  %-58s ALLOWED\n", r.Action)
+				}
 			} else {
 				fmt.Printf("🔴  %-58s %s\n", r.Action, strings.ToUpper(r.Reason))
 			}

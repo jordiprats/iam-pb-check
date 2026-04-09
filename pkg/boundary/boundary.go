@@ -143,6 +143,63 @@ func EvaluatePolicy(action string, doc policy.PolicyDocument) bool {
 	return allowed
 }
 
+// FindAllowingPatterns returns the patterns from the permission boundary that cause
+// the action to be allowed (or denied). For policy-based boundaries it inspects each
+// statement; for simple pattern lists it delegates to matcher.MatchesAnyPattern.
+func FindAllowingPatterns(action string, pb *PermissionBoundary) []string {
+	if pb.Policy != nil {
+		return findPolicyMatchingPatterns(action, *pb.Policy)
+	}
+	_, patterns := matcher.MatchesAnyPattern(action, pb.Patterns)
+	return patterns
+}
+
+// findPolicyMatchingPatterns collects the most informative patterns explaining
+// why an action is allowed. When a Deny+NotAction statement is present, the
+// specific NotAction patterns that saved the action from denial are returned
+// instead of the less useful Allow:* pattern.
+func findPolicyMatchingPatterns(action string, doc policy.PolicyDocument) []string {
+	var allowPatterns []string
+	var denyNotActionMatches []string
+	hasDenyNotAction := false
+
+	for _, stmt := range doc.Statement {
+		switch stmt.Effect {
+		case "Allow":
+			if stmt.Action != nil {
+				patterns := matcher.ExtractStrings(stmt.Action)
+				if _, matched := matcher.MatchesAnyPattern(action, patterns); len(matched) > 0 {
+					allowPatterns = append(allowPatterns, matched...)
+				}
+			} else if stmt.NotAction != nil {
+				patterns := matcher.ExtractStrings(stmt.NotAction)
+				if matches, _ := matcher.MatchesAnyPattern(action, patterns); !matches {
+					if matcher.IsWildcardAction(action) && matcher.WildcardOverlapsAnyPattern(action, patterns) {
+						continue
+					}
+					allowPatterns = append(allowPatterns, "NotAction (everything except "+strings.Join(patterns, ", ")+")")
+				}
+			}
+		case "Deny":
+			if stmt.NotAction != nil {
+				hasDenyNotAction = true
+				patterns := matcher.ExtractStrings(stmt.NotAction)
+				if _, matched := matcher.MatchesAnyPattern(action, patterns); len(matched) > 0 {
+					// These are the NotAction patterns that saved the action from the deny
+					denyNotActionMatches = append(denyNotActionMatches, matched...)
+				}
+			}
+		}
+	}
+
+	// When a Deny+NotAction is present and matched, those are more informative
+	// than a broad Allow:* — show which patterns prevented the deny.
+	if hasDenyNotAction && len(denyNotActionMatches) > 0 {
+		return denyNotActionMatches
+	}
+	return allowPatterns
+}
+
 // DiffPolicies computes actions in A that are allowed but not in B.
 func DiffPolicies(pbA, pbB *PermissionBoundary, actionsA []string) (onlyInA, onlyInB []string) {
 	for _, a := range actionsA {

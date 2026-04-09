@@ -853,3 +853,147 @@ func TestLoadFromFile_SimpleAllowPB(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FindAllowingPatterns
+// ---------------------------------------------------------------------------
+
+func TestFindAllowingPatterns_PolicyDirect(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: []interface{}{"s3:Get*", "s3:List*", "ec2:Describe*"}},
+			},
+		},
+	}
+	patterns := FindAllowingPatterns("s3:GetObject", pb)
+	if len(patterns) != 1 || patterns[0] != "s3:Get*" {
+		t.Errorf("expected [s3:Get*], got %v", patterns)
+	}
+}
+
+func TestFindAllowingPatterns_PolicyMultipleMatches(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: []interface{}{"s3:*", "s3:Get*"}},
+			},
+		},
+	}
+	patterns := FindAllowingPatterns("s3:GetObject", pb)
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 matching patterns, got %v", patterns)
+	}
+}
+
+func TestFindAllowingPatterns_PolicyNotAction(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", NotAction: []interface{}{"iam:*", "organizations:*"}},
+			},
+		},
+	}
+	patterns := FindAllowingPatterns("s3:GetObject", pb)
+	if len(patterns) != 1 {
+		t.Errorf("expected 1 NotAction pattern, got %v", patterns)
+	}
+	if len(patterns) > 0 && patterns[0] == "" {
+		t.Error("pattern should describe the NotAction rule")
+	}
+}
+
+func TestFindAllowingPatterns_PolicyNotAllowed(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: []interface{}{"s3:Get*"}},
+			},
+		},
+	}
+	patterns := FindAllowingPatterns("ec2:RunInstances", pb)
+	if len(patterns) != 0 {
+		t.Errorf("expected no patterns for denied action, got %v", patterns)
+	}
+}
+
+func TestFindAllowingPatterns_PatternBased(t *testing.T) {
+	pb := &PermissionBoundary{
+		Patterns: []string{"s3:Get*", "ec2:Describe*"},
+	}
+	patterns := FindAllowingPatterns("s3:GetObject", pb)
+	if len(patterns) != 1 || patterns[0] != "s3:Get*" {
+		t.Errorf("expected [s3:Get*], got %v", patterns)
+	}
+}
+
+func TestFindAllowingPatterns_DenyDoesNotSurface(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: "*"},
+				{Effect: "Deny", Action: []interface{}{"iam:CreateRole"}},
+			},
+		},
+	}
+	// iam:CreateRole is denied overall, but FindAllowingPatterns only returns allow-side matches
+	patterns := FindAllowingPatterns("iam:CreateRole", pb)
+	// It should return the Allow * pattern (the deny via Action is not surfaced here)
+	if len(patterns) != 1 || patterns[0] != "*" {
+		t.Errorf("expected [*] from Allow side, got %v", patterns)
+	}
+}
+
+func TestFindAllowingPatterns_DenyNotAction_ShowsSavingPatterns(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: "*"},
+				{Effect: "Deny", NotAction: []interface{}{
+					"ecr:*G*",
+					"ecr:*be*",
+					"ecr:*er*",
+					"ecr:*g",
+					"ecr:*ge",
+					"ecr:*rt*",
+					"ecr:L*",
+					"ecr:V*",
+					"s3:G*",
+				}},
+			},
+		},
+	}
+	// ecr:CreatePullThroughCacheRule matches ecr:*er* (cach-er-ule) and ecr:*G* (throu-g-h)
+	// via case-insensitive matching — these are the patterns that save it from the deny
+	patterns := FindAllowingPatterns("ecr:CreatePullThroughCacheRule", pb)
+	if len(patterns) == 0 {
+		t.Fatal("expected matching NotAction patterns, got none")
+	}
+	// Should return the specific NotAction patterns, not just "*"
+	for _, p := range patterns {
+		if p == "*" {
+			t.Error("expected specific NotAction patterns, not '*'")
+		}
+	}
+}
+
+func TestFindAllowingPatterns_DenyNotAction_NoMatch_FallsBackToAllow(t *testing.T) {
+	pb := &PermissionBoundary{
+		Policy: &policy.PolicyDocument{
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: []interface{}{"s3:Get*"}},
+				{Effect: "Deny", NotAction: []interface{}{"ec2:Describe*"}},
+			},
+		},
+	}
+	// ec2:DescribeInstances matches the Deny+NotAction → not denied
+	// but there's no Allow for ec2 — it's not allowed overall
+	// s3:GetObject doesn't match the NotAction (no ec2) → it IS denied
+	// This case is unusual; test that we get allow patterns when NotAction doesn't match
+	patterns := FindAllowingPatterns("s3:GetObject", pb)
+	// s3:GetObject is denied by the Deny+NotAction (not in ec2:Describe*),
+	// but FindAllowingPatterns still returns the allow-side match
+	if len(patterns) != 1 || patterns[0] != "s3:Get*" {
+		t.Errorf("expected [s3:Get*], got %v", patterns)
+	}
+}

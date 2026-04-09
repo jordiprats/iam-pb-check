@@ -935,9 +935,9 @@ echo "=== gendocs ==="
   && pass "gendocs created docs/iamctl.md" \
   || fail "docs/iamctl.md not found after gendocs"
 
-[ -f "./docs/iamctl_pb-check.md" ] \
-  && pass "gendocs created docs for pb-check" \
-  || fail "docs/iamctl_pb-check.md not found"
+[ -f "./docs/iamctl_check-access.md" ] \
+  && pass "gendocs created docs for check-access" \
+  || fail "docs/iamctl_check-access.md not found"
 
 # -----------------------------------------------------------------------
 # AWS-requiring commands — --help smoke tests

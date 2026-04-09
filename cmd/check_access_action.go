@@ -30,11 +30,11 @@ func runCheckAction(cmd *cobra.Command, actions []string) error {
 			fmt.Fprintf(os.Stderr, "🟡  '%s' contains a wildcard — result reflects pattern matching only, not full action enumeration.\n", action)
 		}
 		if boundary.IsActionAllowed(action, pb) {
-			if pb.Policy != nil {
-				fmt.Printf("🟢  %-58s ALLOWED\n", action)
-			} else {
-				_, matchingPatterns := matcher.MatchesAnyPattern(action, pb.Patterns)
+			matchingPatterns := boundary.FindAllowingPatterns(action, pb)
+			if len(matchingPatterns) > 0 {
 				fmt.Printf("🟢  %-58s matches: %s\n", action, strings.Join(matchingPatterns, ", "))
+			} else {
+				fmt.Printf("🟢  %-58s ALLOWED\n", action)
 			}
 		} else {
 			anyDenied = true
