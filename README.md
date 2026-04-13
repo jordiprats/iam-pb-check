@@ -11,7 +11,7 @@ This tool allows you to:
 3. **Describe Policy** (`describe-policy`): Show managed policy metadata and its JSON document.
 4. **Role List** (`role-list`): List IAM roles whose name contains a given string, with optional last-activity filtering.
 5. **Policy List** (`policy-list`): List IAM managed policies whose name contains a given string, with optional description filters.
-6. **Permission Boundary Diff** (`pb-diff`): Compare a policy against two permission boundaries to see what access would be gained or lost.
+6. **Diff** (`diff`): Compare IAM permissions between two sources (roles, CloudFormation templates, policy files) in unified diff format, or compare a policy against two permission boundaries.
 7. **Policy from Role Usage** (`policy-from-role-usage`): Generate a least-privilege policy based on a role's actual usage (service last accessed data).
 8. **Shrink Role Policies** (`shrink-role-policies`): Take a role's existing attached policies and remove unused actions based on actual usage.
 9. **Merge Policies** (`merge-policies`): Merge policies from a role or CloudFormation template into a single unified policy JSON.
@@ -250,42 +250,82 @@ SARIF rules emitted:
 
 ---
 
-#### `pb-diff` — Compare Permission Boundaries
+#### `diff` — Compare IAM Permissions
 
-Compare a policy's actions against two permission boundaries to see what access would be gained or lost when switching from one boundary to another.
+Compare IAM permissions between any two sources using unified diff format (like `diff -u`). Each side can be a live AWS IAM role, a CloudFormation template, or a local policy file.
 
-Policy source — specify exactly one:
-- A local JSON policy file (positional argument, or `-` for stdin)
-- `--role <name>` to fetch the role's attached managed policies live from AWS
+Also supports the legacy boundary diff mode (`pb-diff`), comparing a policy source's actions against two permission boundaries.
+
+**Source diff mode** — compare two IAM sources:
 
 ```bash
-iamctl pb-diff --pb <old-boundary> --pb-new <new-boundary> [policy-file]
-iamctl pb-diff --pb <old-boundary> --pb-new <new-boundary> --role <role-name>
+# Compare two live AWS roles
+iamctl diff --from-role my-role-dev --to-role my-role-prod
+
+# Compare a role to a policy file
+iamctl diff --from-role my-role --to-policy desired-policy.json
+
+# Compare a CloudFormation template to a live role
+iamctl diff --from-cf template.yaml --to-role my-role
+iamctl diff --from-cf template.yaml --from-resource LambdaRole --to-role my-role
+
+# Compare two policy files
+iamctl diff --from-policy old.json --to-policy new.json
+
+# Compare two CloudFormation templates
+iamctl diff --from-cf old-template.yaml --to-cf new-template.yaml
 ```
 
-**Options:**
-- `--pb <file>` **(required)**: Path to the old (current) permission boundary file
-- `--pb-new <file>` **(required)**: Path to the new permission boundary to compare against
-- `--role <name>`: IAM role name — fetch its managed policies from AWS instead of using a local file
-- `--profile <name>`: AWS profile to use when `--role` is specified
-- `--output <format>`: Output format — `list` or `json` (default: `list`)
-
-**Examples:**
+**Boundary diff mode** (legacy `pb-diff`):
 
 ```bash
-# Compare boundaries against a local policy file
-iamctl pb-diff --pb old-pb.json --pb-new new-pb.json policy.json
+# Compare a policy against two permission boundaries
+iamctl diff --pb old-pb.json --pb-new new-pb.json policy.json
 
-# Compare boundaries against a live IAM role's attached policies
-iamctl pb-diff --pb old-pb.json --pb-new new-pb.json --role my-role
+# Same with a live role
+iamctl diff --pb old-pb.json --pb-new new-pb.json --role my-role
 
-# JSON output for CI integration
-iamctl pb-diff --pb old-pb.json --pb-new new-pb.json --output json policy.json
+# JSON output for CI
+iamctl diff --pb old-pb.json --pb-new new-pb.json --output json policy.json
+
+# Legacy list format
+iamctl diff --pb old-pb.json --pb-new new-pb.json --output list policy.json
+```
+
+**Source flags (source diff mode):**
+- `--from-role <name>` / `--to-role <name>`: AWS IAM role name
+- `--from-cf <file>` / `--to-cf <file>`: CloudFormation template file
+- `--from-policy <file>` / `--to-policy <file>`: Local policy JSON file (or `-` for stdin)
+- `--from-resource <id>` / `--to-resource <id>`: Filter a CF template to a specific IAM resource
+
+**Boundary flags (boundary diff mode):**
+- `--pb <file>` **(required)**: Path to the old permission boundary file
+- `--pb-new <file>` **(required)**: Path to the new permission boundary
+- `--role <name>`: IAM role name (mutually exclusive with policy file argument)
+
+**Common flags:**
+- `--profile <name>`: AWS profile to use
+- `--output <format>`: Output format — `unified` (default), `json`, or `list` (list only for boundary diff)
+
+**Aliases:** `pb-diff`, `compare`, `cmp`, `role-diff`, `rd`
+
+**Output example (unified format):**
+
+```
+--- role: my-role-dev
++++ role: my-role-prod
+@@ Allow Actions @@
+ ec2:DescribeInstances
+-ec2:RunInstances
++lambda:InvokeFunction
+ s3:GetObject
+ s3:ListBucket
+-s3:PutObject
 ```
 
 **Exit Codes:**
-- `0`: No access is lost
-- `1`: One or more actions would lose access
+- `0`: No differences found (source diff) or no access lost (boundary diff)
+- `1`: Differences exist (source diff) or access is lost (boundary diff)
 
 ---
 

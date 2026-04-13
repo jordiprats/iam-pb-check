@@ -378,6 +378,7 @@ jq -e '[.lost[]] | contains(["iam:GetUser","s3:PutObject"])' "$TMPDIR_TEST/diff_
 "$BINARY" diff \
   --pb "$TESTDATA/test-diff-old-pb.json" \
   --pb-new "$TESTDATA/test-diff-new-pb.json" \
+  --output list \
   "$TESTDATA/test-diff-policy.json" > "$TMPDIR_TEST/diff_list.txt" || true
 
 grep -q "gained\|Newly allowed" "$TMPDIR_TEST/diff_list.txt" \
@@ -387,6 +388,27 @@ grep -q "gained\|Newly allowed" "$TMPDIR_TEST/diff_list.txt" \
 grep -q "lost\|No longer allowed" "$TMPDIR_TEST/diff_list.txt" \
   && pass "diff list output mentions lost actions" \
   || fail "diff list output missing lost section"
+
+"$BINARY" diff \
+  --pb "$TESTDATA/test-diff-old-pb.json" \
+  --pb-new "$TESTDATA/test-diff-new-pb.json" \
+  "$TESTDATA/test-diff-policy.json" > "$TMPDIR_TEST/diff_unified.txt" || true
+
+grep -q "^--- allowed by:" "$TMPDIR_TEST/diff_unified.txt" \
+  && pass "diff unified output has --- header" \
+  || fail "diff unified output missing --- header"
+
+grep -q "^+++ allowed by:" "$TMPDIR_TEST/diff_unified.txt" \
+  && pass "diff unified output has +++ header" \
+  || fail "diff unified output missing +++ header"
+
+grep -q "ec2:RunInstances" "$TMPDIR_TEST/diff_unified.txt" \
+  && pass "diff unified output shows gained action" \
+  || fail "diff unified output missing ec2:RunInstances"
+
+grep -q "iam:GetUser" "$TMPDIR_TEST/diff_unified.txt" \
+  && pass "diff unified output shows lost action" \
+  || fail "diff unified output missing iam:GetUser"
 
 "$BINARY" diff --pb "$TESTDATA/test-diff-old-pb.json" "$TESTDATA/test-diff-policy.json" \
   && fail "Should error when --pb-new is missing" \
