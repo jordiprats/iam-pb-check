@@ -967,13 +967,10 @@ echo "=== gendocs ==="
 echo ""
 echo "=== AWS-requiring commands (--help smoke tests) ==="
 
-for cmd_alias in "shrink-role-policies srp shrink" \
-                 "role-list rl lr search-roles sr" \
-                 "policy-list pl lp search-policies sp" \
-                 "describe-role dr" \
-                 "describe-policy dp" \
-                 "pb-check-role check-role cr" \
-                 "policy-from-role-usage pfu activity-policy policy-from-usage"; do
+for cmd_alias in "optimize opt minimize shrink-role-policies shrink srp policy-from-role-usage pfu activity-policy policy-from-usage" \
+                 "list ls role-list rl lr search-roles sr policy-list pl lp search-policies sp" \
+                 "describe desc describe-role dr describe-policy dp" \
+                 "pb-check-role check-role cr"; do
   primary=$(echo "$cmd_alias" | awk '{print $1}')
   "$BINARY" "$primary" --help > /dev/null 2>&1 \
     && pass "$primary is registered (--help works)" \

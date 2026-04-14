@@ -6,15 +6,12 @@ A command-line tool for inspecting **AWS IAM roles and policies**, validating ac
 
 This tool allows you to:
 
-1. **Permission Boundary Check** (`pb-check`): Unified command to check actions, policy files, IAM roles, or CloudFormation templates against a permission boundary — replaces the old `pb-check-action`, `pb-check-policy`, `pb-check-role`, and `pb-check-cf` commands (all old names still work as aliases).
-2. **Describe Role** (`describe-role`): Show role summary details, switch role link, managed policies, and inline policy JSON.
-3. **Describe Policy** (`describe-policy`): Show managed policy metadata and its JSON document.
-4. **Role List** (`role-list`): List IAM roles whose name contains a given string, with optional last-activity filtering.
-5. **Policy List** (`policy-list`): List IAM managed policies whose name contains a given string, with optional description filters.
-6. **Diff** (`diff`): Compare IAM permissions between two sources (roles, CloudFormation templates, policy files) in unified diff format, or compare a policy against two permission boundaries.
-7. **Policy from Role Usage** (`policy-from-role-usage`): Generate a least-privilege policy based on a role's actual usage (service last accessed data).
-8. **Shrink Role Policies** (`shrink-role-policies`): Take a role's existing attached policies and remove unused actions based on actual usage.
-9. **Merge Policies** (`merge-policies`): Merge policies from a role or CloudFormation template into a single unified policy JSON.
+1. **Permission Boundary Check** (`check-access`): Unified command to check actions, policy files, IAM roles, or CloudFormation templates against a permission boundary.
+2. **Describe** (`describe`): Show details for an IAM role or managed policy — auto-detects the type from the argument (ARN = policy, otherwise = role).
+3. **List** (`list`): List IAM roles or managed policies whose name contains a given string. Use `--policies` to search policies instead of roles.
+4. **Diff** (`diff`): Compare IAM permissions between two sources (roles, CloudFormation templates, policy files) in unified diff format, or compare a policy against two permission boundaries.
+5. **Optimize** (`optimize`): Generate a minimal policy for a role based on actual usage. By default, shrinks existing attached policies; use `--from-scratch` to generate a clean-slate policy.
+6. **Merge Policies** (`merge-policies`): Merge policies from a role or CloudFormation template into a single unified policy JSON.
 
 ## Installation
 
@@ -111,121 +108,79 @@ When invoked as `check-action`/`pb-check-action`/`ca`, positional arguments are 
 
 ---
 
-#### `describe-role` — Describe an IAM Role
+#### `describe` — Describe an IAM Role or Managed Policy
 
-Show role summary details similar to the AWS console, plus managed policy names and inline policy JSON documents.
+Show details for an IAM role or managed policy. The argument type is auto-detected:
+- If it starts with `arn:`, it is treated as a **managed policy ARN**
+- Otherwise, it is treated as a **role name**
 
 ```bash
-iamctl describe-role [options] <role-name>
+iamctl describe [options] <role-name | policy-arn>
 ```
 
 **Options:**
 - `--profile <name>`: AWS profile to use
 - `--output <format>`: Output format — `wide` or `json` (default: `wide`)
+- `--json-policy`: Print only the policy JSON document (only with policy ARN)
+
+**Aliases:** `desc`, `describe-role`, `dr`, `describe-policy`, `dp`
 
 **Examples:**
 
 ```bash
 # Describe a role
+iamctl describe my-role
+iamctl describe --output json my-role
+iamctl describe --profile staging my-role
+
+# Describe a managed policy
+iamctl describe arn:aws:iam::aws:policy/ReadOnlyAccess
+iamctl describe --json-policy arn:aws:iam::123456789012:policy/MyPolicy
+
+# Legacy aliases still work
 iamctl describe-role my-role
-
-# JSON output
-iamctl describe-role --output json my-role
-
-# Use a specific profile
-iamctl describe-role --profile staging my-role
-```
-
----
-
-#### `describe-policy` — Describe a Managed Policy
-
-Show managed policy metadata and the default version JSON policy document.
-
-```bash
-iamctl describe-policy [options] <policy-arn>
-```
-
-**Options:**
-- `--profile <name>`: AWS profile to use
-- `--json-policy`: Print only the policy JSON document
-
-**Examples:**
-
-```bash
-# Describe AWS managed policy
 iamctl describe-policy arn:aws:iam::aws:policy/ReadOnlyAccess
-
-# Print only policy JSON
-iamctl describe-policy --json-policy arn:aws:iam::123456789012:policy/MyPolicy
 ```
 
 ---
 
-#### `role-list` — List IAM Roles
+#### `list` — List IAM Roles or Policies
 
-Search IAM roles in the account whose role names contain a case-insensitive substring.
+Search IAM roles or managed policies by name substring. By default, lists roles. Use `--policies` to list managed policies instead.
 
 ```bash
-iamctl role-list [options] <query>
+iamctl list [options] <query>
+iamctl list --policies [options] <query>
 ```
 
 **Options:**
+- `--policies`: List managed policies instead of roles
 - `--output <format>`: Output format — `list` or `json` (default: `list`)
 - `--profile <name>`: AWS profile to use
-- `--active-within-days <n>`: Filter roles active within the last N days
-- `-1, --one-per-line`: Print only matching role names, one per line
+- `--active-within-days <n>`: Filter roles active within the last N days (roles only)
+- `-1, --one-per-line`: Print only matching names, one per line
+- `--scope <scope>`: Policy scope — `all`, `aws`, or `local` (policies only, default: `all`)
+- `--description-contains <text>`: Keep only policies whose description contains text
+- `--description-not-contains <text>`: Exclude policies whose description contains text
+
+**Aliases:** `ls`, `role-list`, `rl`, `lr`, `search-roles`, `sr`, `policy-list`, `pl`, `lp`, `search-policies`, `sp`
 
 **Examples:**
 
 ```bash
 # List roles containing "app"
+iamctl list app
+iamctl list -1 app
+iamctl list --active-within-days 90 app
+
+# List policies containing "read"
+iamctl list --policies read
+iamctl list --policies --scope local app
+iamctl list --policies --description-contains readonly read
+
+# Legacy aliases still work
 iamctl role-list app
-
-# Print matching role names only (one per line)
-iamctl role-list -1 app
-
-# Include only roles active in the last 90 days
-iamctl role-list --active-within-days 90 app
-
-# Use a specific profile
-iamctl role-list --profile staging ops
-```
-
----
-
-#### `policy-list` — List IAM Managed Policies
-
-Search IAM managed policies whose names contain a case-insensitive substring.
-
-```bash
-iamctl policy-list [options] <query>
-```
-
-**Options:**
-- `--output <format>`: Output format — `list` or `json` (default: `list`)
-- `--profile <name>`: AWS profile to use
-- `--scope <scope>`: Policy scope — `all`, `aws`, or `local` (default: `all`)
-- `--description-contains <text>`: Keep only matches whose description contains text
-- `--description-not-contains <text>`: Exclude matches whose description contains text
-
-**Examples:**
-
-```bash
-# List all managed policies containing "read"
-iamctl policy-list read
-
-# Search only customer-managed policies
 iamctl policy-list --scope local app
-
-# Keep only policies whose description contains "readonly"
-iamctl policy-list --description-contains readonly read
-
-# Exclude policies whose description contains "deprecated"
-iamctl policy-list --description-not-contains deprecated read
-
-# JSON output using a specific profile
-iamctl policy-list --output json --profile staging ops
 ```
 
 ---
@@ -329,69 +284,51 @@ iamctl diff --pb old-pb.json --pb-new new-pb.json --output list policy.json
 
 ---
 
-#### `policy-from-role-usage` — Generate Policy from Actual Usage
+#### `optimize` — Generate a Minimal Policy from Actual Usage
 
-Analyze a role's service last accessed data (at ACTION_LEVEL granularity) and generate a brand-new least-privilege policy containing only the actions the role has actually used.
+Analyze a role's service last accessed data (at ACTION_LEVEL granularity) and generate a minimal policy containing only the actions the role has actually used.
 
-AWS IAM tracks action-level usage for up to 400 days. The command displays the tracking period so you know what time range is covered.
+By default (shrink mode), the command fetches attached managed policies and removes unused Allow actions while preserving Deny statements, NotAction statements, Conditions, Resources, and Sids.
 
-```bash
-iamctl policy-from-role-usage [options] <role-name>
-```
-
-**Options:**
-- `--profile <name>`: AWS profile to use
-- `-q, --quiet`: Suppress informational output, print only the policy JSON (useful for scripts)
-
-**Examples:**
-
-```bash
-# Generate a policy from a role's usage
-iamctl policy-from-role-usage my-role
-
-# Use a specific AWS profile
-iamctl policy-from-role-usage --profile staging my-role
-
-# Quiet mode for piping into a file
-iamctl policy-from-role-usage -q my-role > minimal-policy.json
-```
-
----
-
-#### `shrink-role-policies` — Shrink a Role's Policies
-
-Fetch all managed policies attached to a role and remove unused actions based on service last accessed data. The output is a single consolidated policy preserving the original structure (Sids, Resources, Conditions) with only unused Allow actions removed.
-
-Deny statements, NotAction statements, and Conditions are preserved as-is by default.
+Use `--from-scratch` to ignore existing policies and generate a clean-slate policy from the raw usage data.
 Use `--strict` to expand wildcard actions to exact observed actions and deduplicate equivalent statements while preserving targeted resources.
 
+AWS IAM tracks action-level usage for up to 400 days.
+
 ```bash
-iamctl shrink-role-policies [options] <role-name>
+iamctl optimize [options] <role-name>
 ```
+
+**Aliases:** `opt`, `minimize`, `shrink-role-policies`, `shrink`, `srp`, `policy-from-role-usage`, `pfu`, `activity-policy`, `policy-from-usage`
 
 **Options:**
 - `--profile <name>`: AWS profile to use
 - `-q, --quiet`: Suppress informational output, print only the policy JSON (useful for scripts)
-- `--ignore-deny`: Omit Deny statements from the output policy
-- `--strict`: Expand wildcard actions to exact observed actions and deduplicate equivalent statements while preserving targeted resources
+- `--from-scratch`: Generate a clean-slate policy from usage data instead of shrinking existing policies
+- `--ignore-deny`: Omit Deny statements from the output policy (shrink mode only)
+- `--strict`: Expand wildcard actions to exact observed actions and deduplicate equivalent statements (shrink mode only)
 
 **Examples:**
 
 ```bash
-# Shrink a role's policies to only used actions
-iamctl shrink-role-policies my-role
+# Shrink a role's policies to only used actions (default)
+iamctl optimize my-role
 
-# Use a specific AWS profile
-iamctl shrink-role-policies --profile staging my-role
+# Generate a clean-slate policy from usage data
+iamctl optimize --from-scratch my-role
 
 # Quiet mode for piping into a file
-iamctl shrink-role-policies -q my-role > shrunk-policy.json
+iamctl optimize -q my-role > minimal-policy.json
 
 # Omit Deny statements from the output
-iamctl shrink-role-policies --ignore-deny my-role
+iamctl optimize --ignore-deny my-role
 
-# Expand wildcards to exact observed actions and deduplicate equivalent statements while preserving targeted resources
-iamctl shrink-role-policies --strict my-role
+# Expand wildcards to exact observed actions
+iamctl optimize --strict my-role
+
+# Legacy aliases still work
+iamctl shrink-role-policies my-role
+iamctl policy-from-role-usage my-role
 ```
 
 ---

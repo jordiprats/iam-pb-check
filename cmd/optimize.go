@@ -19,27 +19,60 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newShrinkRolePoliciesCmd() *cobra.Command {
+func newOptimizeCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "shrink-role-policies <role-name>",
-		Aliases: []string{"shrink", "srp"},
-		Short:   "Generate a minimal policy for a role by removing unused actions from its attached policies",
-		Long: `Fetches all managed policies attached to the given role, then uses service last accessed
-data (at ACTION_LEVEL granularity) to identify which actions are actually being used.
+		Use: "optimize <role-name>",
+		Aliases: []string{
+			"opt", "minimize",
+			// legacy shrink-role-policies aliases
+			"shrink-role-policies", "shrink", "srp",
+			// legacy policy-from-role-usage aliases
+			"policy-from-role-usage", "activity-policy", "policy-from-usage", "pfu",
+		},
+		Short: "Generate a minimal policy for a role based on actual usage",
+		Long: `Analyze a role's service last accessed data (at ACTION_LEVEL granularity) and
+generate a minimal policy containing only the actions the role has actually used.
 
-Outputs a single consolidated policy containing only the actions the role has really used.
-Deny statements, NotAction statements, Conditions, Resources, and Sids are preserved as-is by default.
+By default (shrink mode), the command fetches attached managed policies and removes
+unused Allow actions while preserving Deny statements, NotAction statements,
+Conditions, Resources, and Sids.
+
+Use --from-scratch to ignore existing policies and generate a clean-slate policy
+from the raw usage data (all actions grouped by service, Resource: "*").
+
 Use --ignore-deny to omit Deny statements from the output.
-Use --strict to expand wildcard actions to exact observed actions and deduplicate equivalent statements while preserving targeted resources.`,
+Use --strict to expand wildcard actions to exact observed actions and deduplicate
+equivalent statements while preserving targeted resources.`,
 		Args: cobra.ExactArgs(1),
-		Example: `  iamctl shrink-role-policies my-role
-  iamctl shrink-role-policies --profile staging my-role`,
+		Example: `  # Shrink a role's policies to only used actions (default)
+  iamctl optimize my-role
+
+  # Generate a clean-slate policy from usage data
+  iamctl optimize --from-scratch my-role
+
+  # Legacy aliases still work
+  iamctl shrink-role-policies my-role
+  iamctl policy-from-role-usage my-role
+
+  # Quiet mode for piping into a file
+  iamctl optimize -q my-role > minimal-policy.json
+
+  # Expand wildcards and deduplicate
+  iamctl optimize --strict my-role`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, _ := cmd.Flags().GetString("profile")
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			ignoreDeny, _ := cmd.Flags().GetBool("ignore-deny")
 			strict, _ := cmd.Flags().GetBool("strict")
+			fromScratch, _ := cmd.Flags().GetBool("from-scratch")
 			roleName := args[0]
+
+			// Auto-detect from-scratch mode when invoked via legacy aliases
+			calledAs := cmd.CalledAs()
+			switch calledAs {
+			case "policy-from-role-usage", "activity-policy", "policy-from-usage", "pfu":
+				fromScratch = true
+			}
 
 			ctx := cmd.Context()
 
@@ -65,63 +98,136 @@ Use --strict to expand wildcard actions to exact observed actions and deduplicat
 			}
 			roleArn := *roleOut.Role.Arn
 
-			// Fetch and merge the role's attached policies
-			if !quiet {
-				fmt.Fprintf(os.Stderr, "Fetching policies for role: %s\n", roleArn)
+			if fromScratch {
+				return runOptimizeFromScratch(ctx, client, roleArn, quiet)
 			}
-			policies, err := awsiam.FetchRolePolicies(ctx, client, roleName)
-			if err != nil {
-				return fmt.Errorf("fetching role policies: %w", err)
-			}
-			if len(policies) == 0 {
-				return fmt.Errorf("no managed policies attached to role %q", roleName)
-			}
-			if !quiet {
-				fmt.Fprintf(os.Stderr, "Found %d attached policy/policies\n", len(policies))
-			}
-			doc := mergePolicyDocs(policies)
-
-			// Fetch service last accessed data
-			accessedActions, accessedDetails, err := fetchAccessedActions(ctx, client, roleArn)
-			if err != nil {
-				return err
-			}
-
-			if !quiet {
-				fmt.Fprintf(os.Stderr, "Actions observed in use: %d\n", len(accessedActions))
-				printTrackingPeriod(accessedDetails)
-			}
-
-			// Shrink the policy
-			shrunk, removed := shrinkDocument(doc, accessedActions, shrinkOptions{
-				ignoreDeny: ignoreDeny,
-				strict:     strict,
-			})
-
-			if !quiet {
-				if len(removed) > 0 {
-					fmt.Fprintf(os.Stderr, "\nRemoved %d unused action(s):\n", len(removed))
-					for _, a := range removed {
-						fmt.Fprintf(os.Stderr, "  - %s\n", a)
-					}
-					fmt.Fprintln(os.Stderr)
-				} else {
-					fmt.Fprintln(os.Stderr, "No unused actions found — policy is already minimal.")
-				}
-			}
-
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(shrunk)
+			return runOptimizeShrink(ctx, cmd, client, roleName, roleArn, quiet, ignoreDeny, strict)
 		},
 	}
 
 	cmd.Flags().String("profile", "", "AWS profile to use")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress informational output, print only the policy JSON")
-	cmd.Flags().Bool("ignore-deny", false, "Omit Deny statements from the output policy")
-	cmd.Flags().Bool("strict", false, "Expand wildcard actions to exact observed actions and deduplicate equivalent statements while preserving targeted resources")
+	cmd.Flags().Bool("from-scratch", false, "Generate a clean-slate policy from usage data instead of shrinking existing policies")
+	cmd.Flags().Bool("ignore-deny", false, "Omit Deny statements from the output policy (shrink mode only)")
+	cmd.Flags().Bool("strict", false, "Expand wildcard actions to exact observed actions and deduplicate equivalent statements (shrink mode only)")
 
 	return cmd
+}
+
+// runOptimizeFromScratch generates a brand-new policy from raw usage data.
+func runOptimizeFromScratch(ctx context.Context, client *iam.Client, roleArn string, quiet bool) error {
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "Analyzing activity for role: %s\n", roleArn)
+	}
+
+	accessedActions, accessedDetails, err := fetchAccessedActions(ctx, client, roleArn)
+	if err != nil {
+		return err
+	}
+
+	if !quiet {
+		printTrackingPeriod(accessedDetails)
+	}
+
+	statements := buildStatementsFromAccessedMap(accessedActions)
+
+	if len(statements) == 0 {
+		return fmt.Errorf("no activity found for role: %s", roleArn)
+	}
+
+	doc := policy.PolicyDocument{
+		Version:   "2012-10-17",
+		Statement: statements,
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(doc)
+}
+
+// runOptimizeShrink fetches attached policies and removes unused actions.
+func runOptimizeShrink(ctx context.Context, cmd *cobra.Command, client *iam.Client, roleName, roleArn string, quiet, ignoreDeny, strict bool) error {
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "Fetching policies for role: %s\n", roleArn)
+	}
+	policies, err := awsiam.FetchRolePolicies(ctx, client, roleName)
+	if err != nil {
+		return fmt.Errorf("fetching role policies: %w", err)
+	}
+	if len(policies) == 0 {
+		return fmt.Errorf("no managed policies attached to role %q", roleName)
+	}
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "Found %d attached policy/policies\n", len(policies))
+	}
+	doc := mergePolicyDocs(policies)
+
+	// Fetch service last accessed data
+	accessedActions, accessedDetails, err := fetchAccessedActions(ctx, client, roleArn)
+	if err != nil {
+		return err
+	}
+
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "Actions observed in use: %d\n", len(accessedActions))
+		printTrackingPeriod(accessedDetails)
+	}
+
+	// Shrink the policy
+	shrunk, removed := shrinkDocument(doc, accessedActions, shrinkOptions{
+		ignoreDeny: ignoreDeny,
+		strict:     strict,
+	})
+
+	if !quiet {
+		if len(removed) > 0 {
+			fmt.Fprintf(os.Stderr, "\nRemoved %d unused action(s):\n", len(removed))
+			for _, a := range removed {
+				fmt.Fprintf(os.Stderr, "  - %s\n", a)
+			}
+			fmt.Fprintln(os.Stderr)
+		} else {
+			fmt.Fprintln(os.Stderr, "No unused actions found — policy is already minimal.")
+		}
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(shrunk)
+}
+
+// buildStatementsFromAccessedMap creates policy statements grouped by service
+// from the accessed actions map (used in from-scratch mode).
+func buildStatementsFromAccessedMap(accessed map[string]string) []policy.Statement {
+	// Group actions by service namespace
+	byService := make(map[string][]string)
+	for _, canonical := range accessed {
+		parts := strings.SplitN(canonical, ":", 2)
+		if len(parts) == 2 {
+			byService[parts[0]] = append(byService[parts[0]], canonical)
+		}
+	}
+
+	// Sort service names for deterministic output
+	serviceNames := make([]string, 0, len(byService))
+	for svc := range byService {
+		serviceNames = append(serviceNames, svc)
+	}
+	sort.Strings(serviceNames)
+
+	var statements []policy.Statement
+	for _, svc := range serviceNames {
+		actions := byService[svc]
+		sort.Strings(actions)
+		stmt := policy.Statement{
+			Effect:   "Allow",
+			Action:   actions,
+			Resource: "*",
+		}
+		statements = append(statements, stmt)
+	}
+
+	return statements
 }
 
 // fetchAccessedActions retrieves ACTION_LEVEL last accessed data for an ARN
@@ -253,16 +359,13 @@ func shrinkDocument(doc policy.PolicyDocument, accessed map[string]string, opts 
 		surviving = dedupeStrings(surviving)
 
 		if len(surviving) == 0 {
-			// Entire statement pruned
 			continue
 		}
 
-		// Rebuild the statement with only surviving actions
 		newStmt := stmt
 		if len(surviving) == 1 {
 			newStmt.Action = surviving[0]
 		} else {
-			// Convert to []interface{} to match the original JSON marshaling
 			iface := make([]interface{}, len(surviving))
 			for i, s := range surviving {
 				iface[i] = s
@@ -289,12 +392,10 @@ func shrinkDocument(doc policy.PolicyDocument, accessed map[string]string, opts 
 func isActionAccessed(policyAction string, accessed map[string]string) bool {
 	lower := strings.ToLower(policyAction)
 
-	// Direct match (common case)
 	if _, ok := accessed[lower]; ok {
 		return true
 	}
 
-	// If the policy action has wildcards, check if any accessed action matches the pattern
 	if matcher.IsWildcardAction(policyAction) {
 		re, err := matcher.IamPatternToRegex(policyAction)
 		if err != nil {
@@ -491,4 +592,39 @@ func mergePolicyDocs(policies map[string]policy.PolicyDocument) policy.PolicyDoc
 		Version:   "2012-10-17",
 		Statement: allStatements,
 	}
+}
+
+func valueOrEmpty(err *iamtypes.ErrorDetails) string {
+	if err == nil {
+		return ""
+	}
+	if err.Message != nil {
+		return *err.Message
+	}
+	return ""
+}
+
+// printTrackingPeriod prints the time range covered by the service last accessed data.
+func printTrackingPeriod(details *iam.GetServiceLastAccessedDetailsOutput) {
+	var oldest, newest time.Time
+
+	for _, svc := range details.ServicesLastAccessed {
+		if svc.LastAuthenticated == nil {
+			continue
+		}
+		t := *svc.LastAuthenticated
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+		if newest.IsZero() || t.After(newest) {
+			newest = t
+		}
+	}
+
+	if !oldest.IsZero() {
+		days := int(time.Since(oldest).Hours() / 24)
+		fmt.Fprintf(os.Stderr, "Tracking period: %s to %s (~%d days)\n",
+			oldest.Format("2006-01-02"), newest.Format("2006-01-02"), days)
+	}
+	fmt.Fprintf(os.Stderr, "Note: AWS IAM tracks action-level usage for up to 400 days\n\n")
 }

@@ -3,8 +3,58 @@ package cmd
 import (
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/jordiprats/iamctl/pkg/policy"
 )
+
+func TestBuildStatementsFromAccessedMap(t *testing.T) {
+	accessed := map[string]string{
+		"ec2:createnetworkinterface":    "ec2:CreateNetworkInterface",
+		"ec2:describenetworkinterfaces": "ec2:DescribeNetworkInterfaces",
+		"kms:decrypt":                   "kms:Decrypt",
+	}
+
+	stmts := buildStatementsFromAccessedMap(accessed)
+
+	if len(stmts) != 2 {
+		t.Fatalf("expected 2 statements (one per service), got %d", len(stmts))
+	}
+
+	// Statements should be sorted by service name
+	if stmts[0].Effect != "Allow" {
+		t.Errorf("expected Allow, got %s", stmts[0].Effect)
+	}
+	if stmts[0].Resource != "*" {
+		t.Errorf("expected *, got %v", stmts[0].Resource)
+	}
+
+	ec2Actions, ok := stmts[0].Action.([]string)
+	if !ok {
+		t.Fatalf("expected []string action, got %T", stmts[0].Action)
+	}
+	if len(ec2Actions) != 2 {
+		t.Fatalf("expected 2 ec2 actions, got %d", len(ec2Actions))
+	}
+	if ec2Actions[0] != "ec2:CreateNetworkInterface" {
+		t.Errorf("expected ec2:CreateNetworkInterface, got %s", ec2Actions[0])
+	}
+
+	kmsActions, ok := stmts[1].Action.([]string)
+	if !ok {
+		t.Fatalf("expected []string action, got %T", stmts[1].Action)
+	}
+	if len(kmsActions) != 1 || kmsActions[0] != "kms:Decrypt" {
+		t.Errorf("expected [kms:Decrypt], got %v", kmsActions)
+	}
+}
+
+func TestBuildStatementsFromAccessedMap_Empty(t *testing.T) {
+	stmts := buildStatementsFromAccessedMap(map[string]string{})
+	if len(stmts) != 0 {
+		t.Fatalf("expected 0 statements, got %d", len(stmts))
+	}
+}
 
 func TestShrinkDocument_RemovesUnusedActions(t *testing.T) {
 	doc := policy.PolicyDocument{
@@ -432,5 +482,27 @@ func TestMergePolicyDocs_Empty(t *testing.T) {
 
 	if len(merged.Statement) != 0 {
 		t.Fatalf("expected 0 statements for empty input, got %d", len(merged.Statement))
+	}
+}
+
+func TestValueOrEmpty_Nil(t *testing.T) {
+	if got := valueOrEmpty(nil); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestValueOrEmpty_WithMessage(t *testing.T) {
+	err := &iamtypes.ErrorDetails{
+		Message: aws.String("something went wrong"),
+	}
+	if got := valueOrEmpty(err); got != "something went wrong" {
+		t.Errorf("expected 'something went wrong', got %q", got)
+	}
+}
+
+func TestValueOrEmpty_NilMessage(t *testing.T) {
+	err := &iamtypes.ErrorDetails{}
+	if got := valueOrEmpty(err); got != "" {
+		t.Errorf("expected empty string, got %q", got)
 	}
 }
