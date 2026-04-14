@@ -1223,3 +1223,124 @@ func TestCheckAccess_ActionMode_ShowsMatchingPattern(t *testing.T) {
 		t.Errorf("expected 'ec2:Describe*' pattern in output, got: %s", output)
 	}
 }
+
+// --- Legacy alias edge cases ---
+
+func TestCheckAccess_LegacyCheckActionPositionalArgs(t *testing.T) {
+	// When invoked as "check-action", positional args should be treated as actions
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "check-action", "s3:GetObject")
+	// Should fail with --pb required, NOT with "at least one of" (meaning the action was recognized)
+	if err == nil {
+		t.Fatal("expected error (--pb required)")
+	}
+	if !strings.Contains(err.Error(), "--pb is required") {
+		t.Errorf("expected --pb required error for legacy alias, got: %v", err)
+	}
+}
+
+func TestCheckAccess_LegacyCheckRolePositionalArg(t *testing.T) {
+	// When invoked as "check-role", first positional arg should be treated as role name
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "check-role", "my-role")
+	// Should try to resolve role (fail with AWS error or similar), NOT with "at least one of"
+	if err == nil {
+		t.Fatal("expected error (AWS/role resolution)")
+	}
+	// Should NOT be a usage validation error
+	if strings.Contains(err.Error(), "at least one of") {
+		t.Errorf("legacy check-role alias should treat positional arg as role name, got: %v", err)
+	}
+}
+
+func TestCheckAccess_LegacyCfPositionalArg(t *testing.T) {
+	// When invoked as "check-cf", first positional arg should be treated as cf-template
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "check-cf", "nonexistent.yaml")
+	if err == nil {
+		t.Fatal("expected error (file not found)")
+	}
+	// Should NOT be a usage validation error
+	if strings.Contains(err.Error(), "at least one of") {
+		t.Errorf("legacy check-cf alias should treat positional arg as template, got: %v", err)
+	}
+}
+
+// --- SARIF output requires --cf-template ---
+
+func TestCheckAccess_SarifWithoutCf(t *testing.T) {
+	root := NewRootCmd("test")
+	pbFile := filepath.Join("..", "testdata", "test-pb-simple-allow.json")
+	policyContent := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`
+	tmpFile := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(tmpFile, []byte(policyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	oldStderr := os.Stderr
+	_, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	root.SetArgs([]string{"check-access", "--pb", pbFile, "--output", "sarif", tmpFile})
+	_ = root.Execute()
+
+	w.Close()
+	wErr.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	// sarif is only meant for --cf-template; with policy file it should still produce output
+	// (or handle gracefully)
+	_ = buf.String()
+}
+
+// --- Multiple --action flags ---
+
+func TestCheckAccess_MultipleActions_AllAllowed(t *testing.T) {
+	pbFile := filepath.Join("..", "testdata", "test-pb-simple-allow.json")
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	oldStderr := os.Stderr
+	_, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	root := NewRootCmd("test")
+	root.SetArgs([]string{"check-access", "--action", "s3:GetObject", "--action", "s3:PutObject", "--action", "s3:ListBuckets", "--pb", pbFile})
+	err := root.Execute()
+
+	w.Close()
+	wErr.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "s3:GetObject") {
+		t.Errorf("expected s3:GetObject in output, got: %s", output)
+	}
+}
+
+// --- Stdin as "-" for policy file ---
+
+func TestCheckAccess_StdinDashWithoutPb(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "check-access", "-")
+	if err == nil {
+		t.Fatal("expected error when --pb not specified")
+	}
+	if !strings.Contains(err.Error(), "--pb is required") {
+		t.Errorf("expected --pb required, got: %v", err)
+	}
+}

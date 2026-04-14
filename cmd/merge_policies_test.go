@@ -457,3 +457,126 @@ func TestStrict_NormalizesUnsortedActions(t *testing.T) {
 		t.Errorf("expected sorted actions [s3:GetObject, s3:PutObject], got %v", actions)
 	}
 }
+
+// --- Edge cases for filterDenyStatements ---
+
+func TestFilterDenyStatements_CaseInsensitive(t *testing.T) {
+	stmts := []policy.Statement{
+		{Effect: "DENY", Action: "iam:*"},
+		{Effect: "deny", Action: "sts:*"},
+		{Effect: "Allow", Action: "s3:GetObject"},
+	}
+	result := filterDenyStatements(stmts)
+	if len(result) != 1 {
+		t.Errorf("expected 1 (case-insensitive deny), got %d", len(result))
+	}
+}
+
+func TestFilterDenyStatements_EmptyInput(t *testing.T) {
+	result := filterDenyStatements(nil)
+	if len(result) != 0 {
+		t.Errorf("expected 0, got %d", len(result))
+	}
+}
+
+// --- Edge cases for merge-policies validation ---
+
+func TestMergePolicies_NoSource(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "merge-policies")
+	if err == nil {
+		t.Fatal("expected error when no source specified")
+	}
+}
+
+func TestMergePolicies_BothSources(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "merge-policies", "--role", "my-role", "--cf-template", "tmpl.yaml")
+	if err == nil {
+		t.Fatal("expected error when both sources specified")
+	}
+}
+
+func TestMergePolicies_ResourceWithoutCf(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "merge-policies", "--role", "my-role", "--resource", "MyRole")
+	if err == nil {
+		t.Fatal("expected error when --resource used without --cf-template")
+	}
+}
+
+func TestMergePolicies_LegacyAliases(t *testing.T) {
+	root := NewRootCmd("test")
+
+	for _, alias := range []string{"mp", "merge-role-policies", "mrp", "merge-cf-policies", "mcp"} {
+		cmd, _, err := root.Find([]string{alias})
+		if err != nil {
+			t.Fatalf("%s alias not found: %v", alias, err)
+		}
+		if cmd.Name() != "merge-policies" {
+			t.Errorf("expected merge-policies command for alias %s, got %s", alias, cmd.Name())
+		}
+	}
+}
+
+// --- Edge cases for dedupeStatements ---
+
+func TestDedupeStatements_Empty(t *testing.T) {
+	result := dedupeStatements(nil)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestDedupeStatements_SingleStatement(t *testing.T) {
+	stmts := []policy.Statement{
+		{Effect: "Allow", Action: "s3:GetObject", Resource: "*"},
+	}
+	result := dedupeStatements(stmts)
+	if len(result) != 1 {
+		t.Errorf("expected 1, got %d", len(result))
+	}
+}
+
+// --- Edge cases for mergePolicyDocs ---
+
+func TestMergePolicyDocs_NilStatements(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"P1": {Version: "2012-10-17"},
+	}
+	merged := mergePolicyDocs(policies)
+	if merged.Version != "2012-10-17" {
+		t.Errorf("expected version 2012-10-17, got %s", merged.Version)
+	}
+	if len(merged.Statement) != 0 {
+		t.Errorf("expected 0 statements, got %d", len(merged.Statement))
+	}
+}
+
+func TestMergePolicyDocs_PreservesAllFields(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"P1": {
+			Version: "2012-10-17",
+			Statement: []policy.Statement{{
+				Sid:       "Test",
+				Effect:    "Allow",
+				Action:    "s3:GetObject",
+				Resource:  "arn:aws:s3:::bucket/*",
+				Condition: map[string]interface{}{"StringEquals": map[string]interface{}{"s3:prefix": "home/"}},
+			}},
+		},
+	}
+	merged := mergePolicyDocs(policies)
+	if len(merged.Statement) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(merged.Statement))
+	}
+	if merged.Statement[0].Sid != "Test" {
+		t.Errorf("Sid not preserved: %q", merged.Statement[0].Sid)
+	}
+	if merged.Statement[0].Condition == nil {
+		t.Error("Condition not preserved")
+	}
+	if merged.Statement[0].Resource != "arn:aws:s3:::bucket/*" {
+		t.Errorf("Resource not preserved: %v", merged.Statement[0].Resource)
+	}
+}

@@ -506,3 +506,245 @@ func TestValueOrEmpty_NilMessage(t *testing.T) {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
+
+// --- Edge cases for buildStatementsFromAccessedMap ---
+
+func TestBuildStatementsFromAccessedMap_MalformedAction(t *testing.T) {
+	// Actions without ":" should be silently skipped
+	accessed := map[string]string{
+		"malformed": "Malformed",
+	}
+	stmts := buildStatementsFromAccessedMap(accessed)
+	if len(stmts) != 0 {
+		t.Fatalf("expected 0 statements for malformed action, got %d", len(stmts))
+	}
+}
+
+func TestBuildStatementsFromAccessedMap_SingleAction(t *testing.T) {
+	accessed := map[string]string{
+		"s3:getobject": "s3:GetObject",
+	}
+	stmts := buildStatementsFromAccessedMap(accessed)
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	actions, ok := stmts[0].Action.([]string)
+	if !ok || len(actions) != 1 || actions[0] != "s3:GetObject" {
+		t.Errorf("unexpected action: %v", stmts[0].Action)
+	}
+}
+
+func TestBuildStatementsFromAccessedMap_SortedByService(t *testing.T) {
+	accessed := map[string]string{
+		"s3:getobject":          "s3:GetObject",
+		"ec2:describeinstances": "ec2:DescribeInstances",
+		"iam:getuser":           "iam:GetUser",
+	}
+	stmts := buildStatementsFromAccessedMap(accessed)
+	if len(stmts) != 3 {
+		t.Fatalf("expected 3 statements, got %d", len(stmts))
+	}
+	// Should be sorted: ec2, iam, s3
+	services := make([]string, len(stmts))
+	for i, s := range stmts {
+		a := s.Action.([]string)
+		services[i] = a[0][:3]
+	}
+	if services[0] != "ec2" || services[1] != "iam" || services[2] != "s3:" {
+		t.Errorf("expected [ec2 iam s3] ordering, got %v", services)
+	}
+}
+
+// --- Edge cases for matchedAccessedActions ---
+
+func TestMatchedAccessedActions_ExactMatch(t *testing.T) {
+	accessed := map[string]string{"s3:getobject": "s3:GetObject"}
+	matches := matchedAccessedActions("s3:GetObject", accessed)
+	if len(matches) != 1 || matches[0] != "s3:GetObject" {
+		t.Errorf("expected [s3:GetObject], got %v", matches)
+	}
+}
+
+func TestMatchedAccessedActions_NoMatch(t *testing.T) {
+	accessed := map[string]string{"ec2:describeinstances": "ec2:DescribeInstances"}
+	matches := matchedAccessedActions("s3:GetObject", accessed)
+	if len(matches) != 0 {
+		t.Errorf("expected no matches, got %v", matches)
+	}
+}
+
+func TestMatchedAccessedActions_WildcardMultipleMatches(t *testing.T) {
+	accessed := map[string]string{
+		"s3:getobject": "s3:GetObject",
+		"s3:putobject": "s3:PutObject",
+		"ec2:run":      "ec2:Run",
+	}
+	matches := matchedAccessedActions("s3:*", accessed)
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d: %v", len(matches), matches)
+	}
+	// Should be sorted
+	if matches[0] != "s3:GetObject" || matches[1] != "s3:PutObject" {
+		t.Errorf("expected sorted [s3:GetObject s3:PutObject], got %v", matches)
+	}
+}
+
+func TestMatchedAccessedActions_WildcardNoMatch(t *testing.T) {
+	accessed := map[string]string{"ec2:run": "ec2:Run"}
+	matches := matchedAccessedActions("s3:*", accessed)
+	if len(matches) != 0 {
+		t.Errorf("expected no matches, got %v", matches)
+	}
+}
+
+// --- Edge cases for dedupeStrings ---
+
+func TestDedupeStrings_Empty(t *testing.T) {
+	result := dedupeStrings(nil)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestDedupeStrings_Single(t *testing.T) {
+	result := dedupeStrings([]string{"a"})
+	if len(result) != 1 || result[0] != "a" {
+		t.Errorf("expected [a], got %v", result)
+	}
+}
+
+func TestDedupeStrings_NoDuplicates(t *testing.T) {
+	result := dedupeStrings([]string{"a", "b", "c"})
+	if len(result) != 3 {
+		t.Errorf("expected 3, got %d: %v", len(result), result)
+	}
+}
+
+func TestDedupeStrings_AllDuplicates(t *testing.T) {
+	result := dedupeStrings([]string{"a", "a", "a"})
+	if len(result) != 1 || result[0] != "a" {
+		t.Errorf("expected [a], got %v", result)
+	}
+}
+
+func TestDedupeStrings_PreservesOrder(t *testing.T) {
+	result := dedupeStrings([]string{"c", "b", "a", "b", "c"})
+	if len(result) != 3 {
+		t.Fatalf("expected 3, got %d", len(result))
+	}
+	if result[0] != "c" || result[1] != "b" || result[2] != "a" {
+		t.Errorf("expected [c b a], got %v", result)
+	}
+}
+
+// --- Edge cases for shrinkDocument ---
+
+func TestShrinkDocument_EmptyPolicy(t *testing.T) {
+	doc := policy.PolicyDocument{Version: "2012-10-17"}
+	shrunk, removed := shrinkDocument(doc, map[string]string{}, shrinkOptions{})
+	if len(shrunk.Statement) != 0 {
+		t.Errorf("expected 0 statements, got %d", len(shrunk.Statement))
+	}
+	if len(removed) != 0 {
+		t.Errorf("expected 0 removed, got %v", removed)
+	}
+}
+
+func TestShrinkDocument_AllActionsAccessed(t *testing.T) {
+	doc := policy.PolicyDocument{
+		Version: "2012-10-17",
+		Statement: []policy.Statement{{
+			Effect:   "Allow",
+			Action:   []interface{}{"s3:GetObject", "s3:PutObject"},
+			Resource: "*",
+		}},
+	}
+	accessed := map[string]string{
+		"s3:getobject": "s3:GetObject",
+		"s3:putobject": "s3:PutObject",
+	}
+
+	shrunk, removed := shrinkDocument(doc, accessed, shrinkOptions{})
+
+	if len(removed) != 0 {
+		t.Errorf("expected 0 removed, got %v", removed)
+	}
+	if len(shrunk.Statement) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(shrunk.Statement))
+	}
+}
+
+func TestShrinkDocument_MultipleStatementsPartialPrune(t *testing.T) {
+	doc := policy.PolicyDocument{
+		Version: "2012-10-17",
+		Statement: []policy.Statement{
+			{Effect: "Allow", Action: []interface{}{"s3:GetObject", "s3:PutObject"}, Resource: "*"},
+			{Effect: "Allow", Action: "ec2:RunInstances", Resource: "*"},
+		},
+	}
+	accessed := map[string]string{
+		"s3:getobject": "s3:GetObject",
+	}
+
+	shrunk, removed := shrinkDocument(doc, accessed, shrinkOptions{})
+
+	if len(removed) != 2 {
+		t.Fatalf("expected 2 removed (s3:PutObject, ec2:RunInstances), got %d: %v", len(removed), removed)
+	}
+	if len(shrunk.Statement) != 1 {
+		t.Fatalf("expected 1 surviving statement, got %d", len(shrunk.Statement))
+	}
+}
+
+// --- Edge cases for compact/normalize ---
+
+func TestCompactStatements_SingleStatement(t *testing.T) {
+	stmts := []policy.Statement{
+		{Effect: "Allow", Action: "s3:GetObject", Resource: "*"},
+	}
+	result := compactStatements(stmts)
+	if len(result) != 1 {
+		t.Fatalf("expected 1, got %d", len(result))
+	}
+}
+
+func TestCompactStatements_MergesSameEffectResource(t *testing.T) {
+	// compactStatements merges statements that differ only by Sid
+	stmts := []policy.Statement{
+		{Sid: "A", Effect: "Allow", Action: "s3:GetObject", Resource: "*"},
+		{Sid: "B", Effect: "Allow", Action: "s3:GetObject", Resource: "*"},
+	}
+	result := compactStatements(stmts)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 compacted statement (same action, different Sid), got %d", len(result))
+	}
+	// Sid should be cleared when merging
+	if result[0].Sid != "" {
+		t.Errorf("expected empty Sid after merging, got %q", result[0].Sid)
+	}
+}
+
+func TestCompactStatements_PreservesDifferentResources(t *testing.T) {
+	stmts := []policy.Statement{
+		{Effect: "Allow", Action: "s3:GetObject", Resource: "*"},
+		{Effect: "Allow", Action: "s3:PutObject", Resource: "arn:aws:s3:::bucket/*"},
+	}
+	result := compactStatements(stmts)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 (different resources), got %d", len(result))
+	}
+}
+
+func TestNormalizeStatements_SortsActions(t *testing.T) {
+	stmts := []policy.Statement{
+		{Effect: "Allow", Action: []interface{}{"s3:PutObject", "s3:GetObject"}, Resource: "*"},
+	}
+	result := normalizeStatements(stmts)
+	actions, ok := result[0].Action.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", result[0].Action)
+	}
+	if actions[0] != "s3:GetObject" || actions[1] != "s3:PutObject" {
+		t.Errorf("expected sorted actions, got %v", actions)
+	}
+}

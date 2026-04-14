@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/jordiprats/iamctl/pkg/policy"
 )
 
 // --- Unit tests for computeActionDiff ---
@@ -338,4 +340,220 @@ func TestDiff_BoundaryPolicyFile(t *testing.T) {
 		"../testdata/test-diff-policy.json",
 	})
 	_ = root.Execute()
+}
+
+// --- Edge cases for computeActionDiff ---
+
+func TestComputeActionDiff_FromEmpty(t *testing.T) {
+	added, removed, common := computeActionDiff(nil, []string{"a", "b"})
+	if len(added) != 2 {
+		t.Errorf("expected 2 added, got %v", added)
+	}
+	if len(removed) != 0 {
+		t.Errorf("expected 0 removed, got %v", removed)
+	}
+	if len(common) != 0 {
+		t.Errorf("expected 0 common, got %v", common)
+	}
+}
+
+func TestComputeActionDiff_ToEmpty(t *testing.T) {
+	added, removed, common := computeActionDiff([]string{"a", "b"}, nil)
+	if len(added) != 0 {
+		t.Errorf("expected 0 added, got %v", added)
+	}
+	if len(removed) != 2 {
+		t.Errorf("expected 2 removed, got %v", removed)
+	}
+	if len(common) != 0 {
+		t.Errorf("expected 0 common, got %v", common)
+	}
+}
+
+func TestComputeActionDiff_DuplicatesInInput(t *testing.T) {
+	from := []string{"a", "a", "b"}
+	to := []string{"a", "b", "b"}
+	added, removed, common := computeActionDiff(from, to)
+	if len(added) != 0 {
+		t.Errorf("expected 0 added, got %v", added)
+	}
+	if len(removed) != 0 {
+		t.Errorf("expected 0 removed, got %v", removed)
+	}
+	// common may have duplicates from the from side since we iterate from
+	if len(common) < 2 {
+		t.Errorf("expected at least 2 common, got %v", common)
+	}
+}
+
+// --- Edge cases for dedupeWarnings ---
+
+func TestDedupeWarnings_BothEmpty(t *testing.T) {
+	result := dedupeWarnings(nil, nil)
+	if len(result) != 0 {
+		t.Errorf("expected 0, got %v", result)
+	}
+}
+
+func TestDedupeWarnings_OneEmpty(t *testing.T) {
+	result := dedupeWarnings([]string{"w1", "w2"}, nil)
+	if len(result) != 2 {
+		t.Errorf("expected 2, got %v", result)
+	}
+}
+
+func TestDedupeWarnings_Duplicates(t *testing.T) {
+	a := []string{"w1", "w2"}
+	b := []string{"w2", "w3"}
+	result := dedupeWarnings(a, b)
+	if len(result) != 3 {
+		t.Errorf("expected 3 unique warnings, got %v", result)
+	}
+}
+
+func TestDedupeWarnings_AllDuplicates(t *testing.T) {
+	a := []string{"w1", "w2"}
+	b := []string{"w1", "w2"}
+	result := dedupeWarnings(a, b)
+	if len(result) != 2 {
+		t.Errorf("expected 2, got %v", result)
+	}
+}
+
+// --- Edge cases for diff validation ---
+
+func TestDiff_ToResourceWithoutToCf(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "diff", "--from-policy", "a.json", "--to-policy", "b.json", "--to-resource", "MyRole")
+	if err == nil {
+		t.Fatal("expected error when --to-resource used without --to-cf")
+	}
+	if !strings.Contains(err.Error(), "--to-resource") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDiff_RoleInSourceDiffMode(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "diff", "--from-policy", "a.json", "--role", "my-role")
+	if err == nil {
+		t.Fatal("expected error when --role is used with source diff flags")
+	}
+	if !strings.Contains(err.Error(), "--role is for boundary diff") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDiff_PositionalArgInSourceDiffMode(t *testing.T) {
+	root := NewRootCmd("test")
+	_, err := executeCommand(root, "diff", "--from-policy", "a.json", "--to-policy", "b.json", "extra.json")
+	if err == nil {
+		t.Fatal("expected error when positional arg is used with source diff flags")
+	}
+	if !strings.Contains(err.Error(), "positional policy file") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDiff_ListOutputNotSupportedForSourceDiff(t *testing.T) {
+	if os.Getenv("TEST_SUBPROCESS") != "1" {
+		out, exitCode := runSubprocessTest(t)
+		// Differences found → exit 1, but with unified format fallback
+		if exitCode != 1 {
+			t.Fatalf("expected exit code 1, got %d\noutput:\n%s", exitCode, out)
+		}
+		return
+	}
+
+	root := NewRootCmd("test")
+	root.SetArgs([]string{
+		"diff",
+		"--from-policy", "../testdata/test-policy.json",
+		"--to-policy", "../testdata/test-extra-policy.json",
+		"--output", "list",
+	})
+	_ = root.Execute()
+}
+
+// --- extractActionsFromPolicies ---
+
+func TestExtractActionsFromPolicies_Mixed(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"PolicyA": {
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: []interface{}{"s3:GetObject", "s3:PutObject"}},
+				{Effect: "Deny", Action: "iam:*"},
+			},
+		},
+		"PolicyB": {
+			Statement: []policy.Statement{
+				{Effect: "Allow", Action: "ec2:DescribeInstances"},
+				{Effect: "Allow", NotAction: []interface{}{"sts:*"}, Resource: "*"},
+			},
+		},
+	}
+
+	result := extractActionsFromPolicies(policies)
+
+	if len(result.AllowActions) != 3 {
+		t.Errorf("expected 3 allow actions, got %d: %v", len(result.AllowActions), result.AllowActions)
+	}
+	if len(result.DenyActions) != 1 || result.DenyActions[0] != "iam:*" {
+		t.Errorf("expected [iam:*] deny, got %v", result.DenyActions)
+	}
+	if len(result.NotActionStmts) != 1 {
+		t.Errorf("expected 1 NotAction stmt, got %d", len(result.NotActionStmts))
+	}
+}
+
+func TestExtractActionsFromPolicies_Empty(t *testing.T) {
+	result := extractActionsFromPolicies(map[string]policy.PolicyDocument{})
+	if len(result.AllowActions) != 0 || len(result.DenyActions) != 0 {
+		t.Error("expected empty result for empty input")
+	}
+}
+
+func TestExtractActionsFromPolicies_DeduplicatesActions(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"P1": {Statement: []policy.Statement{{Effect: "Allow", Action: "s3:GetObject"}}},
+		"P2": {Statement: []policy.Statement{{Effect: "Allow", Action: "s3:GetObject"}}},
+	}
+	result := extractActionsFromPolicies(policies)
+	if len(result.AllowActions) != 1 {
+		t.Errorf("expected deduped to 1 allow action, got %d", len(result.AllowActions))
+	}
+}
+
+func TestExtractActionsFromPolicies_Wildcards(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"P1": {Statement: []policy.Statement{{Effect: "Allow", Action: "s3:*"}}},
+	}
+	result := extractActionsFromPolicies(policies)
+	if !result.HasWildcards {
+		t.Error("expected HasWildcards=true")
+	}
+}
+
+func TestExtractActionsFromPolicies_Conditions(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"P1": {Statement: []policy.Statement{
+			{Effect: "Allow", Action: "s3:GetObject", Condition: map[string]interface{}{"test": "val"}},
+		}},
+	}
+	result := extractActionsFromPolicies(policies)
+	if !result.HasConditions {
+		t.Error("expected HasConditions=true")
+	}
+}
+
+func TestExtractActionsFromPolicies_NotResources(t *testing.T) {
+	policies := map[string]policy.PolicyDocument{
+		"P1": {Statement: []policy.Statement{
+			{Effect: "Allow", Action: "s3:GetObject", NotResource: "arn:aws:s3:::secret"},
+		}},
+	}
+	result := extractActionsFromPolicies(policies)
+	if !result.HasNotResources {
+		t.Error("expected HasNotResources=true")
+	}
 }
