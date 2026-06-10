@@ -61,6 +61,9 @@ Output uses unified diff format:
   # Compare two CloudFormation templates
   iamctl diff --from-cf old-template.yaml --to-cf new-template.yaml
 
+  # Compare two permission boundaries directly
+  iamctl diff --pb old-boundary.json --pb-new new-boundary.json
+
   # Boundary diff (legacy pb-diff mode)
   iamctl diff --pb old-boundary.json --pb-new new-boundary.json policy.json
   iamctl diff --pb old-boundary.json --pb-new new-boundary.json --role my-role
@@ -275,7 +278,7 @@ func runBoundaryDiff(cmd *cobra.Command, args []string, format, profile, pbFile,
 	}
 
 	if roleName == "" && len(args) == 0 {
-		return fmt.Errorf("either a policy file argument or --role must be specified")
+		return runSourceDiff(cmd, format, profile, "", "", pbFile, "", "", pbNewFile)
 	}
 	if roleName != "" && len(args) > 0 {
 		return fmt.Errorf("--role and a policy file argument are mutually exclusive")

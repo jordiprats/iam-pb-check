@@ -178,11 +178,27 @@ func TestDiff_BoundaryMissingPbNew(t *testing.T) {
 }
 
 func TestDiff_BoundaryNoSource(t *testing.T) {
-	root := NewRootCmd("test")
-	_, err := executeCommand(root, "diff", "--pb", "old.json", "--pb-new", "new.json")
-	if err == nil {
-		t.Fatal("expected error when no policy source specified for boundary diff")
+	if os.Getenv("TEST_SUBPROCESS") != "1" {
+		out, exitCode := runSubprocessTest(t)
+		if exitCode != 1 {
+			t.Fatalf("expected exit code 1 (differences found), got %d\noutput:\n%s", exitCode, out)
+		}
+		if !strings.Contains(out, "--- policy:") {
+			t.Errorf("missing '--- policy:' header:\n%s", out)
+		}
+		if !strings.Contains(out, "+++ policy:") {
+			t.Errorf("missing '+++ policy:' header:\n%s", out)
+		}
+		return
 	}
+
+	root := NewRootCmd("test")
+	root.SetArgs([]string{
+		"diff",
+		"--pb", "../testdata/test-diff-old-pb.json",
+		"--pb-new", "../testdata/test-diff-new-pb.json",
+	})
+	_ = root.Execute()
 }
 
 func TestDiff_BoundaryRoleAndPolicyFile(t *testing.T) {

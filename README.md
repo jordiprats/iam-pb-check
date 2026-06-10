@@ -234,6 +234,9 @@ iamctl diff --from-cf old-template.yaml --to-cf new-template.yaml
 **Boundary diff mode** (legacy `pb-diff`):
 
 ```bash
+# Compare two permission boundaries directly
+iamctl diff --pb old-pb.json --pb-new new-pb.json
+
 # Compare a policy against two permission boundaries
 iamctl diff --pb old-pb.json --pb-new new-pb.json policy.json
 

@@ -47,6 +47,9 @@ iamctl diff [policy-file] [flags]
   # Compare two CloudFormation templates
   iamctl diff --from-cf old-template.yaml --to-cf new-template.yaml
 
+  # Compare two permission boundaries directly
+  iamctl diff --pb old-boundary.json --pb-new new-boundary.json
+
   # Boundary diff (legacy pb-diff mode)
   iamctl diff --pb old-boundary.json --pb-new new-boundary.json policy.json
   iamctl diff --pb old-boundary.json --pb-new new-boundary.json --role my-role
