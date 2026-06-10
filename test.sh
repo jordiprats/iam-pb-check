@@ -427,16 +427,20 @@ grep -qi "mutually exclusive\|cannot" "$TMPDIR_TEST/diff_exclusive_err.txt" \
   && pass "Error message mentions mutual exclusivity" \
   || fail "Error should mention --role and file are mutually exclusive"
 
-# No policy source at all → error
+# No policy source → direct PB comparison (source diff mode)
 "$BINARY" diff \
   --pb "$TESTDATA/test-diff-old-pb.json" \
-  --pb-new "$TESTDATA/test-diff-new-pb.json" 2>"$TMPDIR_TEST/diff_no_source_err.txt" \
-  && fail "diff should error when neither --role nor policy file is given" \
-  || pass "diff correctly errors when no policy source is specified"
+  --pb-new "$TESTDATA/test-diff-new-pb.json" > "$TMPDIR_TEST/diff_direct_pb.txt" \
+  && fail "diff --pb --pb-new (direct) should exit non-zero when differences exist" \
+  || pass "diff --pb --pb-new (direct) correctly exits non-zero on differences"
 
-grep -qi "policy file\|--role\|must be specified" "$TMPDIR_TEST/diff_no_source_err.txt" \
-  && pass "Error message mentions --role or policy file requirement" \
-  || fail "Error should mention needing --role or a policy file"
+grep -q "s3:PutObject" "$TMPDIR_TEST/diff_direct_pb.txt" \
+  && pass "Direct PB diff shows removed action s3:PutObject" \
+  || fail "Direct PB diff should show s3:PutObject"
+
+grep -q "ec2:RunInstances" "$TMPDIR_TEST/diff_direct_pb.txt" \
+  && pass "Direct PB diff shows added action ec2:RunInstances" \
+  || fail "Direct PB diff should show ec2:RunInstances"
 
 # -----------------------------------------------------------------------
 # pb-check-cf SARIF output
