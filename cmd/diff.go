@@ -255,10 +255,12 @@ func runSourceDiff(cmd *cobra.Command, format, profile,
 			fmt.Printf("\n  Deny Actions: %d action(s), no changes\n", len(commonDeny))
 		}
 
-		totalAdded := len(addedAllow) + len(addedDeny)
-		totalRemoved := len(removedAllow) + len(removedDeny)
-		totalCommon := len(commonAllow) + len(commonDeny)
-		fmt.Fprintf(os.Stderr, "\nSummary: %d added, %d removed, %d unchanged\n", totalAdded, totalRemoved, totalCommon)
+		addedW := len(fmt.Sprintf("%d", max(len(addedAllow), len(addedDeny))))
+		removedW := len(fmt.Sprintf("%d", max(len(removedAllow), len(removedDeny))))
+		commonW := len(fmt.Sprintf("%d", max(len(commonAllow), len(commonDeny))))
+		fmt.Printf("\nSummary:\n")
+		fmt.Printf("  Allow:  🟢 %*d added  🔴 %*d removed  %*d unchanged\n", addedW, len(addedAllow), removedW, len(removedAllow), commonW, len(commonAllow))
+		fmt.Printf("  Deny:   🟢 %*d added  🔴 %*d removed  %*d unchanged\n", addedW, len(addedDeny), removedW, len(removedDeny), commonW, len(commonDeny))
 	}
 
 	if hasDiff {
@@ -395,7 +397,7 @@ func runBoundaryDiff(cmd *cobra.Command, args []string, format, profile, pbFile,
 		printUnifiedSection("Actions ("+sourceLabel+")",
 			len(gained), len(lost), len(unchanged),
 			gained, lost, unchanged)
-		fmt.Fprintf(os.Stderr, "\nSummary: %d gained, %d lost, %d unchanged\n", len(gained), len(lost), len(unchanged))
+		fmt.Printf("\nSummary: %d gained, %d lost, %d unchanged\n", len(gained), len(lost), len(unchanged))
 	}
 
 	if len(lost) > 0 {
